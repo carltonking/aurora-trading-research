@@ -1,6 +1,6 @@
 """Simple long-only research backtesting engine."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import pandas as pd
@@ -8,6 +8,26 @@ import pandas as pd
 from aurora.backtesting.exceptions import BacktestInputError
 from aurora.backtesting.metrics import BacktestMetrics, calculate_equity_curve_metrics
 from aurora.backtesting.trades import Position, Trade, trades_to_dataframe
+from aurora.data.intraday_helpers import get_bars_per_day
+
+
+_PERIODS_PER_YEAR = {
+    "1d": 252,
+    "1wk": 52,
+    "1mo": 12,
+}
+
+
+def _calculate_periods_per_year(interval: str | None) -> int:
+    """Calculate periods per year based on interval."""
+    if interval is None:
+        return 252
+
+    if interval in _PERIODS_PER_YEAR:
+        return _PERIODS_PER_YEAR[interval]
+
+    bars_per_day = get_bars_per_day(interval)
+    return int(bars_per_day * 252)
 
 
 @dataclass(frozen=True)
@@ -23,7 +43,12 @@ class BacktestConfig:
     signal_col: str = "signal"
     timestamp_col: str = "timestamp"
     symbol_col: str = "symbol"
-    periods_per_year: int = 252
+    interval: str = "1d"
+    periods_per_year: int = field(default=252)
+
+    def __post_init__(self) -> None:
+        if self.periods_per_year == 252 and self.interval != "1d":
+            object.__setattr__(self, 'periods_per_year', _calculate_periods_per_year(self.interval))
 
 
 @dataclass(frozen=True)

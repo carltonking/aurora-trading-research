@@ -668,6 +668,13 @@ def backtest_run(
         str,
         typer.Option("--price-col", help="Price column used for fills and marking."),
     ] = "adjusted_close",
+    interval: Annotated[
+        str,
+        typer.Option(
+            "--interval",
+            help="Data interval: 1m, 5m, 15m, 30m, 1h, 1d, 1wk, 1mo. Affects annualized metrics.",
+        ),
+    ] = "1d",
 ) -> None:
     """Run a research-only long/flat signal backtest."""
     signal_df = load_market_data(signals_key)
@@ -682,6 +689,7 @@ def backtest_run(
         commission_per_trade=commission,
         slippage_bps=slippage_bps,
         price_col=price_col,
+        interval=interval,
     )
     try:
         result = SimpleLongOnlyBacktester(config).run(signal_df)
