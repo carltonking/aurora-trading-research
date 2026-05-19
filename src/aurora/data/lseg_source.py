@@ -2,8 +2,15 @@
 
 This adapter intentionally does not import an LSEG SDK or create network
 clients. A caller must inject a client object that provides ``get_ohlcv``.
+
+Configuration is loaded exclusively from environment variables:
+- LSEG_ENABLED: Enable the adapter (default: false)
+- LSEG_APP_KEY: LSEG API application key
+- LSEG_USERNAME: LSEG username
+- LSEG_PASSWORD: LSEG password
 """
 
+import os
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -40,6 +47,50 @@ class LSEGDataSourceConfig:
     source_name: str = "lseg"
     asset_type: str = "equity"
     currency: str = "USD"
+
+    def __repr__(self) -> str:
+        return (
+            f"LSEGDataSourceConfig("
+            f"enabled={self.enabled}, "
+            f"app_key={'***' if self.app_key else None}, "
+            f"username={'***' if self.username else None}, "
+            f"password={'***' if self.password else None}, "
+            f"source_name={self.source_name!r}, "
+            f"asset_type={self.asset_type!r}, "
+            f"currency={self.currency!r})"
+        )
+
+    def __str__(self) -> str:
+        return self.__repr__()
+
+
+def load_lseg_config_from_env() -> LSEGDataSourceConfig:
+    """Load LSEG configuration from environment variables only.
+
+    Environment variables:
+        LSEG_ENABLED: Set to 'true' or '1' to enable the adapter
+        LSEG_APP_KEY: LSEG API application key
+        LSEG_USERNAME: LSEG username
+        LSEG_PASSWORD: LSEG password
+
+    Returns:
+        LSEGDataSourceConfig with values from environment or defaults.
+
+    Note:
+        This function does not validate credentials - it only loads them.
+        The adapter will fail closed if credentials are incomplete.
+    """
+    enabled = os.getenv("LSEG_ENABLED", "").lower() in ("true", "1", "yes")
+    app_key = os.getenv("LSEG_APP_KEY") or None
+    username = os.getenv("LSEG_USERNAME") or None
+    password = os.getenv("LSEG_PASSWORD") or None
+
+    return LSEGDataSourceConfig(
+        enabled=enabled,
+        app_key=app_key,
+        username=username,
+        password=password,
+    )
 
 
 class LSEGDataSource(MarketDataSource):
