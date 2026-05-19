@@ -74,6 +74,38 @@ AURORA v2.1.0 adds four new phase modules while maintaining all existing safety 
 - CLI: `aurora optimize analyze --strategy <name> --artifact-dir <path>`
 - Never claims profitability, research-only.
 
+### Phase 5A: Paper Performance Analysis
+- `PaperMetrics` dataclass and `PaperPerformanceAnalyzer` class.
+- Computes metrics from execution ledger (APPROVED trades only).
+- Placeholder P&L estimation (real fill data TBD).
+- CLI: `aurora paper performance --strategy <name> --output-dir`
+- Required disclaimer: "Past paper performance does not guarantee future results."
+
+### Phase 5B: Adaptive Optimizer with Paper Metrics
+- `AdaptiveOptimizer` extended with `paper_metrics_path` parameter.
+- Analyzes paper win_rate < 0.35 or max_drawdown > 0.4 → NEEDS_MORE_RESEARCH.
+- Paper declining (Sharpe < backtest * 0.6) triggers conservative parameters.
+- Rationale: "Paper trading results indicate alignment with historical research; no guarantee of future performance."
+- CLI: `aurora optimize analyze --strategy <name> --paper-metrics <path>`
+
+### Phase 5C: Config-Driven Strategy Builder
+- Strategy archetypes: `TrendFollowingStrategy`, `MeanReversionStrategy`, `BreakoutStrategy` in `src/aurora/strategies/archetypes/`.
+- `StrategyBuilder` parses JSON/YAML config, instantiates archetype with parameters.
+- `generate_code()` produces exportable Python class.
+- CLI: `aurora strategy build --config <path> --output-strategy-file <path>`
+
+### Phase 5D: Comprehensive Readiness Report
+- `ReadinessReport` and `ReadinessReportGenerator` aggregate backtest, walk-forward, paper metrics, optimization proposals.
+- Assessment heuristics: weak paper → "elevated risk", NEEDS_MORE_RESEARCH → "further research", all pass → "All research gates passed".
+- Mandatory disclaimer about research-only, no guarantees.
+- CLI: `aurora report readiness --strategy <name> --output <path>`
+
+### Phase 5E: Strategy Export Bundle
+- `StrategyExporter` creates ZIP bundles with strategy code, model, feature config, readiness report, backtest/diagnostics.
+- Secret detection scans for API keys, passwords, tokens; allows `os.getenv()` placeholders.
+- Manifest includes AURORA version and disclaimer.
+- CLI: `aurora export strategy --strategy <name> --output <path.zip>`
+
 ### Safety Boundaries (All Phases)
 - **No live trading** - all execution is paper/simulation only.
 - **No real broker execution** - local simulation only.
@@ -81,7 +113,7 @@ AURORA v2.1.0 adds four new phase modules while maintaining all existing safety 
 - **No secrets in code/logs** - environment variables only, repr masking.
 - **No profitability claims** - research results are not guarantees.
 
-Latest verified test result: **356 passed**.
+Latest verified test result: **395 passed**.
 Safety audit status: **WARN** (37 findings, expected patterns).
 
 ## Release Artifacts
@@ -117,6 +149,11 @@ Safety audit status: **WARN** (37 findings, expected patterns).
 - Alpaca paper-only broker adapter (disabled by default).
 - Paper execution path with RiskManager gating.
 - Adaptive strategy optimizer (research-only).
+- Paper performance analysis.
+- Adaptive optimizer with paper metrics feedback.
+- Config-driven strategy builder with archetypes.
+- Comprehensive readiness report generator.
+- Strategy export bundle with secret detection.
 
 ## Safety Boundaries
 

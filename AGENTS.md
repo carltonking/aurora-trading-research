@@ -47,7 +47,7 @@ PYTHONPATH=src python3 -m aurora.cli.app demo run --output-root data/demo --late
 
 PYTHONPATH=src python3 -m aurora.cli.app reports safety-audit --no-fail-on-critical
 
-Expected current test count: 356 passed.
+Expected current test count: 395 passed.
 Expected safety audit status: WARN, unless intentionally improved with matching tests and docs.
 
 ## Implementation Rules
