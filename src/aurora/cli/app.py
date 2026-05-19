@@ -18,6 +18,8 @@ from aurora.data.base import MarketDataRequest
 from aurora.data.cache import cache_key, load_market_data, save_market_data
 from aurora.data.quality import DataQualityReport, validate_ohlcv_quality
 from aurora.data.yfinance_source import YFinanceDataSource
+from aurora.data.universe import Universe, UniverseProvider
+from aurora.backtesting.portfolio_backtest import run_portfolio_backtest, save_portfolio_result
 from aurora.demo.workflow import DemoWorkflowConfig, DemoWorkflowError, run_demo_workflow
 from aurora.execution.ledger import PaperLedger
 from aurora.execution.models import ORDER_REJECTED, account_to_dict, order_to_dict, position_to_dict
@@ -712,6 +714,135 @@ def backtest_run(
     table.add_row("trades_cache_path", str(trades_path))
     table.add_row("signals_cache_path", str(signals_path))
     console.print(table)
+
+
+@backtest_app.command("portfolio")
+def backtest_portfolio(
+    universe_name: Annotated[
+        str,
+        typer.Option("--universe-name", help="Name of the universe."),
+    ] = "default",
+    symbols: Annotated[
+        str | None,
+        typer.Option(
+            "--symbols",
+            help="Comma-separated list of symbols (e.g., AAPL,MSFT,GOOGL).",
+        ),
+    ] = None,
+    universe_file: Annotated[
+        str | None,
+        typer.Option(
+            "--universe-file",
+            help="Path to JSON file containing universe definition.",
+        ),
+    ] = None,
+    strategy_type: Annotated[
+        str,
+        typer.Option(
+            "--strategy-type",
+            help="Strategy type: ma_cross, momentum, mean_reversion.",
+        ),
+    ] = "ma_cross",
+    start_date: Annotated[
+        str,
+        typer.Option("--start", help="Start date (YYYY-MM-DD)."),
+    ] = "2020-01-01",
+    end_date: Annotated[
+        str,
+        typer.Option("--end", help="End date (YYYY-MM-DD)."),
+    ] = "2020-12-31",
+    initial_capital: Annotated[
+        float,
+        typer.Option("--capital", help="Initial capital."),
+    ] = 100000.0,
+    output: Annotated[
+        str,
+        typer.Option("--output", help="Output path for results JSON."),
+    ] = "data/backtest/portfolio_result.json",
+) -> None:
+    """Run portfolio backtest on a universe of symbols.
+
+    This command is research-only. It runs a multi-asset portfolio backtest.
+    No live trading, no broker calls.
+    """
+    console.print("[cyan]Portfolio Backtest[/cyan]")
+
+    try:
+        if universe_file:
+            universe = UniverseProvider.from_file(universe_file)
+            console.print(f"Loaded universe from: {universe_file}")
+        elif symbols:
+            symbol_list = [s.strip() for s in symbols.split(",")]
+            universe = UniverseProvider.from_list(universe_name, symbol_list)
+            console.print(f"Created universe with {len(symbol_list)} symbols")
+        else:
+            console.print("[red]Error:[/red] Please provide either --symbols or --universe-file")
+            raise typer.Exit(code=1)
+
+        console.print(f"Universe: {universe.name}")
+        console.print(f"Symbols: {', '.join(universe.symbols)}")
+
+        import pandas as pd
+
+        def simple_strategy(data: pd.DataFrame) -> pd.DataFrame:
+            """Simple moving average crossover strategy."""
+            result = data.copy()
+            if "close" in result.columns:
+                ma_fast = result["close"].rolling(window=5).mean()
+                ma_slow = result["close"].rolling(window=20).mean()
+                result["signal"] = 0
+                result.loc[result["close"] > ma_slow, "signal"] = 1
+            return result
+
+        console.print(f"Running portfolio backtest from {start_date} to {end_date}...")
+
+        result = run_portfolio_backtest(
+            strategy_fn=simple_strategy,
+            universe=universe,
+            start_date=start_date,
+            end_date=end_date,
+            initial_capital=initial_capital,
+        )
+
+        output_path = save_portfolio_result(result, output)
+        console.print(f"\n[green]Results saved to:[/green] {output_path}")
+
+        table = Table(title=f"Portfolio Metrics: {result.universe_name}")
+        table.add_column("Metric")
+        table.add_column("Value")
+
+        for metric, value in result.metrics.items():
+            if isinstance(value, float):
+                table.add_row(metric, f"{value:.4f}")
+            else:
+                table.add_row(metric, str(value))
+
+        console.print(table)
+
+        if result.per_symbol_metrics:
+            sym_table = Table(title="Per-Symbol Metrics")
+            sym_table.add_column("Symbol")
+            sym_table.add_column("Total Return")
+            sym_table.add_column("Sharpe")
+            sym_table.add_column("Max DD")
+            sym_table.add_column("Trades")
+
+            for symbol, metrics in result.per_symbol_metrics.items():
+                sym_table.add_row(
+                    symbol,
+                    f"{metrics.get('total_return', 0):.4f}",
+                    f"{metrics.get('sharpe_ratio', 0):.2f}",
+                    f"{metrics.get('max_drawdown', 0):.2%}",
+                    str(metrics.get('trade_count', 0)),
+                )
+
+            console.print(sym_table)
+
+        console.print("\n[yellow]Disclaimer:[/yellow] This is research-only backtest. Past performance does not guarantee future results.")
+
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
 
 
 @validation_app.command("walk-forward")
