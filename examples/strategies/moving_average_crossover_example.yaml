@@ -1,0 +1,21 @@
+strategy_id: moving_average_crossover_example
+name: Moving Average Crossover Example
+strategy_type: moving_average_crossover
+asset_class: equity
+universe:
+  symbols:
+    - AAPL
+timeframe: 1d
+direction: long_only
+entry_rules:
+  - fast_ma: ma_20
+    slow_ma: ma_50
+exit_rules: []
+risk:
+  max_position_pct: 0.05
+  allow_shorting: false
+  allow_margin: false
+validation:
+  require_walk_forward: true
+metadata:
+  status: draft

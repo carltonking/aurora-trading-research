@@ -1,0 +1,33 @@
+# Initial human-readable strategy configuration outline.
+# This is not a formal JSON Schema yet.
+
+strategy_id: "unique-machine-readable-id"
+name: "Human readable strategy name"
+strategy_type: "ml_signal | momentum | mean_reversion | breakout | moving_average_crossover"
+asset_class: "equity | etf"
+universe:
+  symbols:
+    - "SPY"
+  filters: {}
+timeframe: "1d"
+direction: "long_only | flat_only"
+entry_rules:
+  - description: "Plain-language entry logic"
+    prediction_col: "prediction"
+    probability_col: "prediction_probability"
+    min_probability: 0.55
+exit_rules:
+  - description: "Plain-language exit logic"
+    time_stop: null
+risk:
+  max_position_pct: 0.05
+  max_total_exposure_pct: 0.30
+  allow_shorting: false
+  allow_margin: false
+validation:
+  require_walk_forward: true
+  min_trades: 50
+  include_slippage: true
+  include_transaction_costs: true
+metadata:
+  status: "draft"

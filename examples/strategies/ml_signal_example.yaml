@@ -1,0 +1,22 @@
+strategy_id: ml_signal_example
+name: ML Signal Example
+strategy_type: ml_signal
+asset_class: equity
+universe:
+  symbols:
+    - AAPL
+timeframe: 1d
+direction: long_only
+entry_rules:
+  - prediction_col: prediction
+    probability_col: prediction_probability
+    min_probability: 0.55
+exit_rules: []
+risk:
+  max_position_pct: 0.05
+  allow_shorting: false
+  allow_margin: false
+validation:
+  require_walk_forward: true
+metadata:
+  status: draft

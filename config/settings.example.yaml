@@ -1,0 +1,30 @@
+mode: research
+broker: simulation
+
+data:
+  source_priority:
+    - yfinance
+    - lseg_later
+    - alpaca_later
+
+risk_limits:
+  max_position_pct: 0.05
+  max_total_exposure_pct: 0.30
+  max_daily_loss_pct: 0.02
+  max_open_positions: 5
+  max_trades_per_day: 10
+  allow_shorting: false
+  allow_margin: false
+  allow_options: false
+  allow_crypto: false
+
+validation:
+  require_walk_forward: true
+  min_trades: 50
+  include_slippage: true
+  include_transaction_costs: true
+
+execution:
+  live_trading_enabled: false
+  paper_trading_enabled: false
+  approval_required: true

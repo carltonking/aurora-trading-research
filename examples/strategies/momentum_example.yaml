@@ -1,0 +1,21 @@
+strategy_id: momentum_example
+name: Momentum Example
+strategy_type: momentum
+asset_class: equity
+universe:
+  symbols:
+    - AAPL
+timeframe: 1d
+direction: long_only
+entry_rules:
+  - return_col: return_20d
+    min_return: 0.03
+exit_rules: []
+risk:
+  max_position_pct: 0.05
+  allow_shorting: false
+  allow_margin: false
+validation:
+  require_walk_forward: true
+metadata:
+  status: draft
