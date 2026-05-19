@@ -37,8 +37,8 @@ outputs/
 reports/generated/
 
 # Model artifacts
-models/
-artifacts/
+/models/
+/artifacts/
 *.pkl
 *.joblib
 *.onnx
