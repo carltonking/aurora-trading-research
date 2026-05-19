@@ -737,6 +737,27 @@ def validation_walk_forward(
         int,
         typer.Option("--min-trade-count", help="Minimum trade count per window."),
     ] = 3,
+    method: Annotated[
+        str,
+        typer.Option(
+            "--method",
+            help="Walk-forward method: 'rolling' (sliding window) or 'anchored' (fixed start, expanding).",
+        ),
+    ] = "rolling",
+    purge_days: Annotated[
+        int,
+        typer.Option(
+            "--purge-days",
+            help="Number of days to remove from training data before each test period to reduce look-ahead bias.",
+        ),
+    ] = 0,
+    embargo_days: Annotated[
+        int,
+        typer.Option(
+            "--embargo-days",
+            help="Number of days to skip after test period before next training window.",
+        ),
+    ] = 0,
     output_path: Annotated[
         str | None,
         typer.Option("--output-path", help="Optional JSON report output path."),
@@ -754,6 +775,9 @@ def validation_walk_forward(
         min_total_return=min_total_return,
         max_drawdown_limit=max_drawdown_limit,
         min_trade_count=min_trade_count,
+        method=method,
+        purge_days=purge_days,
+        embargo_days=embargo_days,
     )
     try:
         result = run_walk_forward_validation(signal_df, config)

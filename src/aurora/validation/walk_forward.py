@@ -41,6 +41,9 @@ class WalkForwardConfig:
     min_total_return: float = 0.0
     max_drawdown_limit: float = -0.25
     min_trade_count: int = 3
+    method: str = "rolling"
+    purge_days: int = 0
+    embargo_days: int = 0
 
 
 @dataclass(frozen=True)
@@ -79,11 +82,29 @@ def create_walk_forward_windows(
         )
 
     windows = []
-    for window_index, index_values in enumerate(_split_indices(len(timestamps), cfg.n_splits), start=1):
+
+    if cfg.method == "anchored":
+        windows = _create_anchored_windows(timestamps, cfg)
+    else:
+        windows = _create_rolling_windows(timestamps, cfg)
+
+    return windows
+
+
+def _create_rolling_windows(timestamps: pd.Series, config: WalkForwardConfig) -> list[WalkForwardWindow]:
+    """Create rolling walk-forward windows (existing behavior)."""
+    windows = []
+    for window_index, index_values in enumerate(_split_indices(len(timestamps), config.n_splits), start=1):
         test_timestamps = timestamps.iloc[index_values]
         test_start = test_timestamps.iloc[0]
         test_end = test_timestamps.iloc[-1]
+
         train_timestamps = timestamps[timestamps < test_start]
+
+        if config.purge_days > 0:
+            purge_start = test_start - pd.Timedelta(days=config.purge_days)
+            train_timestamps = train_timestamps[train_timestamps < purge_start]
+
         windows.append(
             WalkForwardWindow(
                 window_id=f"wf_{window_index}",
@@ -97,6 +118,54 @@ def create_walk_forward_windows(
                 test_end=_timestamp_to_str(test_end),
             )
         )
+    return windows
+
+
+def _create_anchored_windows(timestamps: pd.Series, config: WalkForwardConfig) -> list[WalkForwardWindow]:
+    """Create anchored walk-forward windows (fixed start, expanding window)."""
+    windows = []
+    first_timestamp = timestamps.iloc[0]
+
+    total_length = len(timestamps)
+    split_size = total_length // config.n_splits
+
+    for window_index in range(1, config.n_splits + 1):
+        test_end_idx = window_index * split_size
+        if window_index == config.n_splits:
+            test_end_idx = total_length
+
+        test_start_idx = (window_index - 1) * split_size
+        test_start = timestamps.iloc[test_start_idx]
+        test_end = timestamps.iloc[test_end_idx - 1]
+
+        train_start = first_timestamp
+
+        purge_end = test_start - pd.Timedelta(days=config.purge_days)
+        train_end_candidate = purge_end - pd.Timedelta(days=1)
+
+        if config.embargo_days > 0 and window_index > 1:
+            prev_test_end = timestamps.iloc[(window_index - 1) * split_size - 1]
+            embargo_start = prev_test_end + pd.Timedelta(days=config.embargo_days)
+            train_end_candidate = min(train_end_candidate, embargo_start - pd.Timedelta(days=1))
+
+        train_timestamps = timestamps[(timestamps >= train_start) & (timestamps <= train_end_candidate)]
+
+        if len(train_timestamps) < config.min_test_rows:
+            train_end = train_end_candidate
+            train_timestamps = timestamps[(timestamps >= train_start) & (timestamps <= train_end)]
+
+        windows.append(
+            WalkForwardWindow(
+                window_id=f"wf_{window_index}",
+                train_start=_timestamp_to_str(train_start),
+                train_end=_timestamp_to_str(train_timestamps.iloc[-1])
+                if not train_timestamps.empty
+                else None,
+                test_start=_timestamp_to_str(test_start),
+                test_end=_timestamp_to_str(test_end),
+            )
+        )
+
     return windows
 
 
@@ -129,6 +198,12 @@ def _validate_window_input(df: pd.DataFrame, config: WalkForwardConfig) -> None:
         raise WalkForwardValidationError("n_splits must be greater than 0.")
     if config.timestamp_col not in df.columns:
         raise WalkForwardValidationError(f"Missing timestamp column: {config.timestamp_col}")
+    if config.method not in ("rolling", "anchored"):
+        raise WalkForwardValidationError(f"Invalid method: {config.method}. Must be 'rolling' or 'anchored'.")
+    if config.purge_days < 0:
+        raise WalkForwardValidationError("purge_days must be non-negative.")
+    if config.embargo_days < 0:
+        raise WalkForwardValidationError("embargo_days must be non-negative.")
 
 
 def _validate_signal_input(df: pd.DataFrame, config: WalkForwardConfig) -> None:
