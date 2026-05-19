@@ -40,6 +40,12 @@ from aurora.models.train import train_baseline_classifier
 from aurora.optimization.adaptive_optimizer import AdaptiveOptimizer
 from aurora.analysis.paper_performance import PaperPerformanceAnalyzer, save_metrics
 from aurora.analysis.monte_carlo import MonteCarloConfig, MonteCarloSimulator, load_trades_from_backtest
+from aurora.analysis.scenario_stress import (
+    StressTester,
+    load_scenario,
+    list_built_in_scenarios,
+    BUILT_IN_SCENARIOS,
+)
 from aurora.readiness.paper_sim import (
     PaperSimReadinessConfig,
     PaperSimReadinessError,
@@ -2380,6 +2386,160 @@ def analyze_monte_carlo(
         console.print(table)
 
         console.print("\n[yellow]Disclaimer:[/yellow] This is research-only simulation. Past performance does not guarantee future results.")
+
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
+@analyze_app.command("stress-test")
+def analyze_stress_test(
+    strategy: Annotated[
+        str,
+        typer.Option("--strategy", help="Strategy name."),
+    ],
+    symbol: Annotated[
+        str,
+        typer.Option("--symbol", help="Symbol to test (e.g., SPY)."),
+    ],
+    start_date: Annotated[
+        str,
+        typer.Option("--start", help="Start date (YYYY-MM-DD)."),
+    ],
+    end_date: Annotated[
+        str,
+        typer.Option("--end", help="End date (YYYY-MM-DD)."),
+    ],
+    scenario: Annotated[
+        str | None,
+        typer.Option(
+            "--scenario",
+            help="Scenario name (e.g., 2008_financial_crisis) or path to JSON file.",
+        ),
+    ] = None,
+    all_scenarios: Annotated[
+        bool,
+        typer.Option(
+            "--all-scenarios",
+            help="Run all built-in scenarios.",
+        ),
+    ] = False,
+    output: Annotated[
+        str,
+        typer.Option(
+            "--output",
+            help="Output path for stress test results.",
+        ),
+    ] = "data/analysis/stress_test_result.json",
+) -> None:
+    """Run stress test on strategy under adverse market scenarios.
+
+    This command is research-only. It applies scenario shocks to market
+    data and evaluates strategy performance. No live trading, no broker calls.
+    """
+    console.print("[cyan]Stress Test Analysis[/cyan]")
+
+    try:
+        from aurora.data.yfinance_source import YFinanceDataSource
+
+        console.print(f"Fetching data for {symbol} from {start_date} to {end_date}...")
+        data_source = YFinanceDataSource()
+        data = data_source.fetch(
+            symbols=[symbol],
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+        if data.empty:
+            console.print(f"[red]No data fetched for {symbol}.[/red]")
+            raise typer.Exit(code=1)
+
+        console.print(f"Loaded {len(data)} rows of data")
+
+        def simple_strategy(df: pd.DataFrame) -> pd.Series:
+            """Simple moving average crossover strategy."""
+            signals = pd.Series(0, index=df.index, dtype=int)
+            if "close" in df.columns:
+                ma_fast = df["close"].rolling(window=5).mean()
+                ma_slow = df["close"].rolling(window=20).mean()
+                signals[df["close"] > ma_slow] = 1
+            return signals
+
+        import pandas as pd
+
+        tester = StressTester(strategy_fn=simple_strategy)
+
+        if all_scenarios:
+            console.print("Running all built-in scenarios...")
+            results = tester.run_all_scenarios(data)
+
+            output_path = tester.save_results(results, output)
+            console.print(f"\n[green]Results saved to:[/green] {output_path}")
+
+            table = Table(title=f"Stress Test Results: {strategy}")
+            table.add_column("Scenario")
+            table.add_column("Original Return")
+            table.add_column("Stressed Return")
+            table.add_column("Original DD")
+            table.add_column("Stressed DD")
+            table.add_column("Original Sharpe")
+            table.add_column("Stressed Sharpe")
+
+            for result in results:
+                table.add_row(
+                    result.scenario_name,
+                    f"{result.original_metrics.get('total_return', 0):.2f}",
+                    f"{result.stressed_metrics.get('total_return', 0):.2f}",
+                    f"{result.original_metrics.get('max_drawdown', 0):.2%}",
+                    f"{result.stressed_metrics.get('max_drawdown', 0):.2%}",
+                    f"{result.original_metrics.get('sharpe_ratio', 0):.2f}",
+                    f"{result.stressed_metrics.get('sharpe_ratio', 0):.2f}",
+                )
+
+            console.print(table)
+
+        elif scenario:
+            if Path(scenario).exists():
+                loaded_scenario = load_scenario(scenario)
+                console.print(f"Loaded scenario from: {scenario}")
+            elif scenario in BUILT_IN_SCENARIOS:
+                loaded_scenario = BUILT_IN_SCENARIOS[scenario]
+                console.print(f"Using built-in scenario: {scenario}")
+            else:
+                console.print(f"[red]Unknown scenario: {scenario}[/red]")
+                console.print(f"Available: {', '.join(BUILT_IN_SCENARIOS.keys())}")
+                raise typer.Exit(code=1)
+
+            result = tester.run_scenario(data, loaded_scenario, strategy_name=strategy)
+
+            output_path = tester.save_result(result, output)
+            console.print(f"\n[green]Results saved to:[/green] {output_path}")
+
+            table = Table(title=f"Stress Test: {strategy} - {result.scenario_name}")
+            table.add_column("Metric")
+            table.add_column("Original")
+            table.add_column("Stressed")
+            table.add_column("Change")
+
+            for metric in ["total_return", "max_drawdown", "win_rate", "sharpe_ratio", "trade_count"]:
+                orig = result.original_metrics.get(metric, 0)
+                stressed = result.stressed_metrics.get(metric, 0)
+                change = stressed - orig
+                table.add_row(
+                    metric,
+                    f"{orig:.4f}",
+                    f"{stressed:.4f}",
+                    f"{change:+.4f}",
+                )
+
+            console.print(table)
+
+        else:
+            console.print("[red]Please specify --scenario or --all-scenarios.[/red]")
+            console.print(f"Available scenarios: {', '.join(BUILT_IN_SCENARIOS.keys())}")
+            raise typer.Exit(code=1)
+
+        console.print("\n[yellow]Disclaimer:[/yellow] This is research-only stress test. Past performance does not guarantee future results.")
 
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
