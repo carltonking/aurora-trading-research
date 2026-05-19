@@ -88,7 +88,7 @@ AURORA v2 remains local-first and paper-trading-first. The current v2 feature se
 
 ## Future Adapter Plans
 
-- LSEG Workspace adapter through an adapter interface.
+- LSEG Workspace adapter scaffolding exists (disabled/fail-closed by default); real LSEG client/credential integration is not implemented yet.
 - Future Alpaca paper adapter only after additional review gates.
 - Current Alpaca paper scaffolding is disabled, dry-run-only, and non-networked.
 - No live trading support is implemented or approved.
@@ -140,7 +140,7 @@ aurora dashboard
 
 ## Market Data Layer
 
-The first implemented market data source is `yfinance`. LSEG Workspace and Alpaca market data are planned for later adapter-based integrations.
+The first implemented market data source is `yfinance`. LSEG Workspace adapter scaffolding exists (disabled by default) and is planned for later integration. Future Alpaca paper adapter only after additional review gates.
 
 Downloaded bars are normalized into AURORA's standard OHLCV schema before use. Data quality checks run before research workflows to catch missing fields, duplicate rows, invalid prices, suspicious volume, and large close-to-close moves that may require review.
 
