@@ -1,0 +1,89 @@
+# AURORA Trading Research - Agent Instructions
+
+## Product Boundary
+
+AURORA is a research-first, paper-trading-first algorithmic trading research platform.
+
+Do not implement live trading.
+Do not implement real-money trading.
+Do not implement direct order placement from prompts.
+Do not add live broker execution.
+Do not commit API keys, secrets, tokens, credentials, or account identifiers.
+Do not make profitability claims.
+Do not bypass RiskManager.
+Do not allow any execution path where a strategy signal directly places an order.
+
+All strategy outputs must remain signals or reviewed candidates before execution.
+Every paper execution candidate must pass RiskManager before any simulated or paper-broker action.
+
+## Current Architecture
+
+Package root: src/aurora
+
+Important modules:
+- src/aurora/data: market data sources, normalization, quality checks
+- src/aurora/features: feature engineering
+- src/aurora/models: training, labels, prediction, registry
+- src/aurora/strategies: strategy configs and signal generation
+- src/aurora/backtesting: research-only backtesting
+- src/aurora/risk: RiskManager hard gate
+- src/aurora/execution: local simulation, ledger, paper-simulation workflow
+- src/aurora/brokers: broker adapter interfaces and disabled stubs
+- src/aurora/reporting: reports, status, safety audit
+- src/aurora/cli/app.py: Typer CLI entrypoint
+
+## Testing Commands
+
+Run before completion:
+
+python3 -m pytest
+
+PYTHONPATH=src python3 -m aurora.cli.app demo run --output-root data/demo --latest-test-count 293
+
+PYTHONPATH=src python3 -m aurora.cli.app reports safety-audit --no-fail-on-critical
+
+Expected current test count: 293 passed.
+Expected safety audit status: WARN, unless intentionally improved with matching tests and docs.
+
+## Implementation Rules
+
+Prefer small, reviewable PRs.
+
+For LSEG:
+- Add a data adapter that conforms to MarketDataSource.
+- Do not require real credentials for tests.
+- Use dependency injection or a mock client for tests.
+- Do not make external network calls in tests.
+- Normalize into the standard OHLCV schema.
+- Add explicit config/env handling.
+- Fail closed when credentials or required config are missing.
+- Add tests for health checks, missing config, mocked successful response, empty data, and normalization errors.
+
+For Alpaca:
+- Paper-only integration only.
+- Keep live trading explicitly unsupported.
+- Use environment variables for credentials.
+- Do not commit credentials.
+- Default to disabled/dry-run.
+- Require explicit paper mode.
+- Every order candidate must pass RiskManager before submission.
+- Add tests proving rejected candidates are not submitted.
+- Add tests proving live mode is blocked.
+
+For adaptive strategy optimization:
+- Build review-gated research optimization only.
+- It may propose parameter changes and rerun research workflows.
+- It must not directly trade.
+- It must write artifacts explaining proposed changes, validation results, and review status.
+- It must not claim guaranteed profitability.
+
+## Git Hygiene
+
+Do not commit:
+- __pycache__/
+- .venv/
+- data/demo/
+- data/status/
+- real model artifacts
+- secrets
+- API keys
