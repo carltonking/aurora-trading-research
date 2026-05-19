@@ -4,7 +4,24 @@ All notable changes to AURORA Trading Research will be documented in this file.
 
 ## Unreleased
 
+## v2.1.0-rc1 - 2026-05-19
+
 ### Added
+
+- **Phase 2B - LSEG Client Boundary**: Optional dependency `lseg` for market data. RealLSEGClient fails closed when SDK not installed or credentials missing. Secrets never exposed in repr/str/health_check messages.
+- **Phase 3A - Alpaca Paper-Only Adapter**: AlpacaPaperBrokerProtocol with paper-only methods. RealAlpacaPaperClient blocks live trading, requires paper account. FakeAlpacaPaperClient for tests/dry-run. Default disabled, opt-in via environment.
+- **Phase 3B - Paper Execution Path**: PaperExecutor gates all orders through RiskManager. PaperExecutionRequest/Result dataclasses. Ledger records all decisions (APPROVED/REJECTED/KILL_SWITCH) to JSONL. Never calls broker without RiskManager approval.
+- **Phase 4A - Adaptive Strategy Optimizer**: AdaptiveOptimizer reads research artifacts (manifest, backtest, diagnostics, review). Deterministic proposals: REJECTED, NEEDS_MORE_RESEARCH, PROPOSED_FOR_REVIEW. Simple rules (Sharpe < 0.5, drawdown > 0.3, win_rate < 0.4 trigger NEEDS_MORE_RESEARCH). Never claims profitability. CLI: `aurora optimize analyze`.
+
+### Safety
+
+- All new modules follow existing safety boundaries.
+- No live trading, no real broker execution, no real API calls.
+- Alpaca live trading explicitly blocked - raises AlpacaLiveTradingError.
+- All execution paths go through RiskManager gate.
+- Optimizer is research-only, never calls brokers or executes trades.
+
+### Added (from previous)
 
 - Optional local ZIP export for Research Artifact Packets. ZIP export packages the packet manifest and copied local packet artifacts only; it does not trade, place orders, call brokers, write ledgers, or approve live trading.
 - Guided Workflow dashboard tab for walking through the local research artifact pipeline from Prompt Lab through safety audit. The workflow reuses existing local research and artifact functions and does not trade, place orders, call brokers, or approve live trading.

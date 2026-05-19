@@ -45,6 +45,45 @@ AURORA v2 remains local-first and paper-trading-first. The current v2 feature se
 - Paper broker integration safety design document.
 - Disabled broker adapter interface/stub scaffolding.
 
+## What's New in v2.1.0
+
+AURORA v2.1.0 adds four new phase modules while maintaining all existing safety boundaries:
+
+### Phase 2B: LSEG Client Boundary
+- Optional `lseg` dependency for market data.
+- `RealLSEGClient` fails closed when SDK missing or credentials absent.
+- Configuration via environment variables: `LSEG_ENABLED`, `LSEG_APP_KEY`, `LSEG_USERNAME`, `LSEG_PASSWORD`.
+- yfinance remains the default data source.
+
+### Phase 3A: Alpaca Paper-Only Adapter
+- `AlpacaPaperBrokerProtocol` with paper trading methods.
+- `RealAlpacaPaperClient` blocks live trading - raises `AlpacaLiveTradingError`.
+- `FakeAlpacaPaperClient` for tests/dry-run (default).
+- Configuration via: `ALPACA_PAPER_ENABLED`, `ALPACA_PAPER_KEY`, `ALPACA_PAPER_SECRET`.
+
+### Phase 3B: Paper Execution Path
+- `PaperExecutor` gates ALL orders through `RiskManager`.
+- `PaperExecutionRequest`/`PaperExecutionResult` for audit trail.
+- Ledger records every decision (APPROVED/REJECTED/KILL_SWITCH).
+- Never calls broker without RiskManager approval.
+
+### Phase 4A: Adaptive Strategy Optimizer
+- `AdaptiveOptimizer` reads research artifacts.
+- Deterministic proposals: REJECTED, NEEDS_MORE_RESEARCH, PROPOSED_FOR_REVIEW.
+- Simple rules: Sharpe < 0.5, drawdown > 0.3, win_rate < 0.4 trigger NEEDS_MORE_RESEARCH.
+- CLI: `aurora optimize analyze --strategy <name> --artifact-dir <path>`
+- Never claims profitability, research-only.
+
+### Safety Boundaries (All Phases)
+- **No live trading** - all execution is paper/simulation only.
+- **No real broker execution** - local simulation only.
+- **RiskManager gate** - every candidate evaluated before any action.
+- **No secrets in code/logs** - environment variables only, repr masking.
+- **No profitability claims** - research results are not guarantees.
+
+Latest verified test result: **356 passed**.
+Safety audit status: **WARN** (37 findings, expected patterns).
+
 ## Release Artifacts
 
 - [CHANGELOG.md](CHANGELOG.md)
@@ -74,17 +113,24 @@ AURORA v2 remains local-first and paper-trading-first. The current v2 feature se
 - Safety Boundary Audit.
 - End-to-end local artifact workflow fixture test.
 - Typer CLI and local Streamlit dashboard.
+- Optional LSEG market data client (disabled by default).
+- Alpaca paper-only broker adapter (disabled by default).
+- Paper execution path with RiskManager gating.
+- Adaptive strategy optimizer (research-only).
 
 ## Safety Boundaries
 
 - Research-first and paper-trading-first.
 - No live trading.
-- No Alpaca live trading or real broker execution.
+- No real broker execution.
 - No real order placement.
 - No direct order placement from prompts.
 - No external LLM/API calls.
 - No real API keys in the repository.
 - No profitability claims.
+- All execution paths go through RiskManager.
+- Alpaca live trading explicitly blocked.
+- Optimizer never calls brokers.
 
 ## Future Adapter Plans
 

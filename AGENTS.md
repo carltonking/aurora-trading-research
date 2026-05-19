@@ -12,9 +12,13 @@ Do not commit API keys, secrets, tokens, credentials, or account identifiers.
 Do not make profitability claims.
 Do not bypass RiskManager.
 Do not allow any execution path where a strategy signal directly places an order.
+Do not allow Alpaca live trading - must block and raise AlpacaLiveTradingError.
+Do not allow optimizer to call brokers or execute trades.
 
 All strategy outputs must remain signals or reviewed candidates before execution.
 Every paper execution candidate must pass RiskManager before any simulated or paper-broker action.
+All paper execution must go through PaperExecutor which gates through RiskManager.
+Optimizer must only read research artifacts and produce proposals - never trade or call brokers.
 
 ## Current Architecture
 
@@ -27,9 +31,10 @@ Important modules:
 - src/aurora/strategies: strategy configs and signal generation
 - src/aurora/backtesting: research-only backtesting
 - src/aurora/risk: RiskManager hard gate
-- src/aurora/execution: local simulation, ledger, paper-simulation workflow
-- src/aurora/brokers: broker adapter interfaces and disabled stubs
+- src/aurora/execution: local simulation, ledger, paper-simulation workflow, paper executor
+- src/aurora/brokers: broker adapter interfaces (Alpaca paper-only, disabled stubs)
 - src/aurora/reporting: reports, status, safety audit
+- src/aurora/optimization: adaptive strategy optimizer (research-only)
 - src/aurora/cli/app.py: Typer CLI entrypoint
 
 ## Testing Commands
@@ -38,11 +43,11 @@ Run before completion:
 
 python3 -m pytest
 
-PYTHONPATH=src python3 -m aurora.cli.app demo run --output-root data/demo --latest-test-count 293
+PYTHONPATH=src python3 -m aurora.cli.app demo run --output-root data/demo --latest-test-count 356
 
 PYTHONPATH=src python3 -m aurora.cli.app reports safety-audit --no-fail-on-critical
 
-Expected current test count: 293 passed.
+Expected current test count: 356 passed.
 Expected safety audit status: WARN, unless intentionally improved with matching tests and docs.
 
 ## Implementation Rules
