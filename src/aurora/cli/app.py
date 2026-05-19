@@ -2,7 +2,7 @@
 
 from dataclasses import asdict
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Callable
 
 import typer
 import yaml
@@ -45,6 +45,10 @@ from aurora.analysis.scenario_stress import (
     load_scenario,
     list_built_in_scenarios,
     BUILT_IN_SCENARIOS,
+)
+from aurora.analysis.sensitivity import (
+    SensitivityAnalyzer,
+    load_sensitivity_config,
 )
 from aurora.readiness.paper_sim import (
     PaperSimReadinessConfig,
@@ -2541,6 +2545,120 @@ def analyze_stress_test(
 
         console.print("\n[yellow]Disclaimer:[/yellow] This is research-only stress test. Past performance does not guarantee future results.")
 
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
+@analyze_app.command("sensitivity")
+def analyze_sensitivity(
+    strategy: Annotated[
+        str,
+        typer.Option("--strategy", help="Strategy name."),
+    ],
+    config: Annotated[
+        str,
+        typer.Option(
+            "--config",
+            help="Path to JSON config defining parameter ranges.",
+        ),
+    ],
+    symbol: Annotated[
+        str,
+        typer.Option("--symbol", help="Symbol to test (e.g., SPY)."),
+    ],
+    start_date: Annotated[
+        str,
+        typer.Option("--start", help="Start date (YYYY-MM-DD)."),
+    ],
+    end_date: Annotated[
+        str,
+        typer.Option("--end", help="End date (YYYY-MM-DD)."),
+    ],
+    metric: Annotated[
+        str,
+        typer.Option(
+            "--metric",
+            help="Metric to analyze (sharpe_ratio, total_return, max_drawdown, win_rate).",
+        ),
+    ] = "sharpe_ratio",
+    output: Annotated[
+        str,
+        typer.Option(
+            "--output",
+            help="Output path for sensitivity results.",
+        ),
+    ] = "data/analysis/sensitivity_result.json",
+) -> None:
+    """Run sensitivity analysis on strategy parameters.
+
+    This command is research-only. It varies strategy parameters and
+    measures metric changes to identify fragile parameters. No live trading, no broker calls.
+    """
+    console.print("[cyan]Sensitivity Analysis[/cyan]")
+
+    try:
+        console.print(f"Loading parameter config from: {config}")
+        sensitivity_config = load_sensitivity_config(config)
+
+        if not sensitivity_config.parameters:
+            console.print("[red]No parameters defined in config.[/red]")
+            raise typer.Exit(code=1)
+
+        console.print(f"Parameters to test: {', '.join(sensitivity_config.parameters.keys())}")
+
+        from aurora.data.yfinance_source import YFinanceDataSource
+        import pandas as pd
+
+        console.print(f"Fetching data for {symbol} from {start_date} to {end_date}...")
+        data_source = YFinanceDataSource()
+        data = data_source.fetch(
+            symbols=[symbol],
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+        if data.empty:
+            console.print(f"[red]No data fetched for {symbol}.[/red]")
+            raise typer.Exit(code=1)
+
+        console.print(f"Loaded {len(data)} rows of data")
+
+        def moving_average_strategy_builder(params: dict) -> Callable[[pd.DataFrame], pd.Series]:
+            """Build a moving average strategy with configurable parameters."""
+            fast_window = params.get("fast_window", 5)
+            slow_window = params.get("slow_window", 20)
+
+            def strategy_fn(df: pd.DataFrame) -> pd.Series:
+                signals = pd.Series(0, index=df.index, dtype=int)
+                if "close" in df.columns:
+                    ma_fast = df["close"].rolling(window=fast_window).mean()
+                    ma_slow = df["close"].rolling(window=slow_window).mean()
+                    signals[df["close"] > ma_slow] = 1
+                return signals
+
+            return strategy_fn
+
+        analyzer = SensitivityAnalyzer(
+            strategy_builder=moving_average_strategy_builder,
+            base_data=data,
+        )
+
+        console.print(f"Running sensitivity analysis for metric: {metric}")
+        result = analyzer.analyze(sensitivity_config, metric=metric)
+
+        output_path = analyzer.save_result(result, output)
+        console.print(f"\n[green]Results saved to:[/green] {output_path}")
+
+        analyzer.print_tornado(result)
+
+        if result.most_sensitive:
+            console.print(f"\n[yellow]Most sensitive parameter:[/yellow] {result.most_sensitive[0]}")
+            console.print("[yellow]Disclaimer:[/yellow] This is research-only sensitivity analysis. Past performance does not guarantee future results.")
+
+    except FileNotFoundError as e:
+        console.print(f"[red]File not found:[/red] {e}")
+        raise typer.Exit(code=1)
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(code=1)
