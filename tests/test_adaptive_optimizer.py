@@ -185,3 +185,175 @@ def test_optimizer_version_set() -> None:
         status="PROPOSED_FOR_REVIEW",
     )
     assert proposal.optimizer_version == "0.1.0"
+
+
+def create_paper_metrics_file(base_path: Path, metrics: dict) -> Path:
+    """Create a paper metrics JSON file."""
+    metrics_path = base_path / "paper_metrics.json"
+    metrics_path.write_text(json.dumps(metrics))
+    return metrics_path
+
+
+def test_paper_metrics_weak_win_rate_returns_needs_more_research() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        base_path = Path(tmpdir)
+        create_artifact_dir(
+            base_path,
+            "test_strategy",
+            "APPROVED_FOR_PAPER_SIMULATION",
+            {"sharpe_ratio": 0.8, "max_drawdown": 0.1, "trade_count": 50, "win_rate": 0.5},
+        )
+
+        paper_metrics_path = create_paper_metrics_file(
+            base_path,
+            {
+                "strategy_name": "test_strategy",
+                "win_rate": 0.25,
+                "max_drawdown": 0.1,
+                "sharpe_ratio": 0.5,
+            },
+        )
+
+        optimizer = AdaptiveOptimizer(
+            artifact_directory=str(base_path),
+            paper_metrics_path=str(paper_metrics_path),
+        )
+        proposal = optimizer.analyze("test_strategy")
+
+        assert proposal.status == "NEEDS_MORE_RESEARCH"
+        assert "win rate" in proposal.rationale.lower()
+        assert "paper" in proposal.rationale.lower()
+
+
+def test_paper_metrics_weak_drawdown_returns_needs_more_research() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        base_path = Path(tmpdir)
+        create_artifact_dir(
+            base_path,
+            "test_strategy",
+            "APPROVED_FOR_PAPER_SIMULATION",
+            {"sharpe_ratio": 0.8, "max_drawdown": 0.1, "trade_count": 50, "win_rate": 0.5},
+        )
+
+        paper_metrics_path = create_paper_metrics_file(
+            base_path,
+            {
+                "strategy_name": "test_strategy",
+                "win_rate": 0.5,
+                "max_drawdown": 0.6,
+                "sharpe_ratio": 0.3,
+            },
+        )
+
+        optimizer = AdaptiveOptimizer(
+            artifact_directory=str(base_path),
+            paper_metrics_path=str(paper_metrics_path),
+        )
+        proposal = optimizer.analyze("test_strategy")
+
+        assert proposal.status == "NEEDS_MORE_RESEARCH"
+        assert "drawdown" in proposal.rationale.lower()
+        assert "paper" in proposal.rationale.lower()
+
+
+def test_paper_metrics_declining_performance_proposes_conservative_changes() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        base_path = Path(tmpdir)
+        create_artifact_dir(
+            base_path,
+            "test_strategy",
+            "APPROVED_FOR_PAPER_SIMULATION",
+            {"sharpe_ratio": 1.0, "max_drawdown": 0.1, "trade_count": 50, "win_rate": 0.5},
+        )
+
+        paper_metrics_path = create_paper_metrics_file(
+            base_path,
+            {
+                "strategy_name": "test_strategy",
+                "win_rate": 0.5,
+                "max_drawdown": 0.2,
+                "sharpe_ratio": 0.3,
+            },
+        )
+
+        optimizer = AdaptiveOptimizer(
+            artifact_directory=str(base_path),
+            paper_metrics_path=str(paper_metrics_path),
+        )
+        proposal = optimizer.analyze("test_strategy")
+
+        assert proposal.status == "PROPOSED_FOR_REVIEW"
+        assert "paper performance lagging" in proposal.rationale.lower()
+        assert any("position" in k.lower() for k in proposal.parameter_changes.keys())
+
+
+def test_paper_metrics_in_line_returns_proposed_for_review() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        base_path = Path(tmpdir)
+        create_artifact_dir(
+            base_path,
+            "test_strategy",
+            "APPROVED_FOR_PAPER_SIMULATION",
+            {"sharpe_ratio": 0.8, "max_drawdown": 0.1, "trade_count": 50, "win_rate": 0.5},
+        )
+
+        paper_metrics_path = create_paper_metrics_file(
+            base_path,
+            {
+                "strategy_name": "test_strategy",
+                "win_rate": 0.5,
+                "max_drawdown": 0.1,
+                "sharpe_ratio": 0.7,
+            },
+        )
+
+        optimizer = AdaptiveOptimizer(
+            artifact_directory=str(base_path),
+            paper_metrics_path=str(paper_metrics_path),
+        )
+        proposal = optimizer.analyze("test_strategy")
+
+        assert proposal.status == "PROPOSED_FOR_REVIEW"
+        assert "paper trading results indicate alignment" in proposal.rationale.lower()
+        assert any(str(paper_metrics_path) in a for a in proposal.based_on_artifacts)
+
+
+def test_no_paper_metrics_path_returns_old_behavior() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        base_path = Path(tmpdir)
+        create_artifact_dir(
+            base_path,
+            "test_strategy",
+            "APPROVED_FOR_PAPER_SIMULATION",
+            {"sharpe_ratio": 0.8, "max_drawdown": 0.1, "trade_count": 50, "win_rate": 0.5},
+        )
+
+        optimizer = AdaptiveOptimizer(
+            artifact_directory=str(base_path),
+            paper_metrics_path=None,
+        )
+        proposal = optimizer.analyze("test_strategy")
+
+        assert proposal.status == "PROPOSED_FOR_REVIEW"
+        assert "Based on historical walk-forward diagnostics" in proposal.rationale
+        assert len([a for a in proposal.based_on_artifacts if "paper" in a.lower()]) == 0
+
+
+def test_nonexistent_paper_metrics_path_returns_old_behavior() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        base_path = Path(tmpdir)
+        create_artifact_dir(
+            base_path,
+            "test_strategy",
+            "APPROVED_FOR_PAPER_SIMULATION",
+            {"sharpe_ratio": 0.8, "max_drawdown": 0.1, "trade_count": 50, "win_rate": 0.5},
+        )
+
+        optimizer = AdaptiveOptimizer(
+            artifact_directory=str(base_path),
+            paper_metrics_path="nonexistent/path.json",
+        )
+        proposal = optimizer.analyze("test_strategy")
+
+        assert proposal.status == "PROPOSED_FOR_REVIEW"
+        assert "Based on historical walk-forward diagnostics" in proposal.rationale

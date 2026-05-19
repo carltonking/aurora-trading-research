@@ -37,6 +37,8 @@ from aurora.models.exceptions import AuroraModelError, ModelRegistryError, Model
 from aurora.models.predict import predict_with_model
 from aurora.models.registry import list_model_artifacts, load_model_artifact, save_model_artifact
 from aurora.models.train import train_baseline_classifier
+from aurora.optimization.adaptive_optimizer import AdaptiveOptimizer
+from aurora.analysis.paper_performance import PaperPerformanceAnalyzer, save_metrics
 from aurora.readiness.paper_sim import (
     PaperSimReadinessConfig,
     PaperSimReadinessError,
@@ -70,6 +72,8 @@ from aurora.reporting.status_snapshot import (
     ProjectStatusSnapshotConfig,
     create_project_status_snapshot,
 )
+from aurora.reporting.readiness_report import ReadinessReportGenerator
+from aurora.export.strategy_exporter import StrategyExporter, SecretDetectionError
 from aurora.research.run import ResearchRunConfig, ResearchRunError, run_research_cycle
 from aurora.review.board import ReviewBoardConfig, ReviewBoardError, review_research_run
 from aurora.strategies.config import load_strategy_config
@@ -88,6 +92,7 @@ from aurora.strategies.registry import (
     load_strategy_from_registry,
     save_strategy_config,
 )
+from aurora.strategies.builder import StrategyBuilder, StrategyBuilderError
 from aurora.validation.exceptions import AuroraValidationError
 from aurora.validation.overfitting import diagnose_backtest_overfitting
 from aurora.validation.report import (
@@ -112,7 +117,13 @@ research_app = typer.Typer(help="Local research run orchestration commands")
 review_app = typer.Typer(help="Local strategy candidate review commands")
 readiness_app = typer.Typer(help="Local readiness gate commands")
 demo_app = typer.Typer(help="Synthetic local demo workflow commands")
+paper_app = typer.Typer(help="Paper performance analysis commands")
+optimize_app = typer.Typer(help="Adaptive optimizer commands")
+export_app = typer.Typer(help="Strategy export bundle commands")
 app.add_typer(data_app, name="data")
+app.add_typer(paper_app, name="paper")
+app.add_typer(optimize_app, name="optimize")
+app.add_typer(export_app, name="export")
 app.add_typer(features_app, name="features")
 app.add_typer(models_app, name="models")
 app.add_typer(strategies_app, name="strategies")
@@ -559,6 +570,53 @@ def strategies_prompt(
     if save:
         path = save_strategy_config(result.config, base_dir=strategies_dir)
         console.print(f"[green]Generated strategy saved:[/green] {path}")
+
+
+@strategies_app.command("build")
+def strategies_build(
+    config: Annotated[
+        str,
+        typer.Option("--config", "-c", help="Path to JSON or YAML config file."),
+    ],
+    output_strategy_file: Annotated[
+        str | None,
+        typer.Option("--output-strategy-file", help="Optional path to write generated Python file."),
+    ] = None,
+) -> None:
+    """Build a strategy from a config file using archetype templates.
+
+    This command is research-only. It parses config files and generates
+    strategy instances from archetype templates. No live trading, no broker calls.
+    """
+    console.print("[cyan]Strategy Builder[/cyan]")
+
+    try:
+        builder = StrategyBuilder(config_path=config)
+        builder.load_config()
+        strategy = builder.build()
+
+        console.print(f"\n[green]Built strategy:[/green] {strategy}")
+
+        params = strategy.get_params()
+        table = Table(title="Strategy Parameters")
+        table.add_column("Parameter")
+        table.add_column("Value")
+        for key, value in params.items():
+            table.add_row(key, str(value))
+        console.print(table)
+
+        if output_strategy_file:
+            code = builder.generate_code()
+            output_path = Path(output_strategy_file)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(code)
+            console.print(f"\n[green]Generated code written:[/green] {output_path}")
+
+        console.print("\n[yellow]Note:[/yellow] This is a research-only strategy. No profitability is claimed.")
+
+    except StrategyBuilderError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
 
 
 @backtest_app.command("run")
@@ -1395,6 +1453,67 @@ def reports_safety_audit(
         raise typer.Exit(1)
 
 
+@reports_app.command("readiness")
+def reports_readiness(
+    strategy: Annotated[
+        str,
+        typer.Option("--strategy", help="Strategy name to generate report for."),
+    ],
+    artifact_dir: Annotated[
+        str,
+        typer.Option(
+            "--artifact-dir",
+            help="Directory containing research run artifacts.",
+        ),
+    ] = "data/demo/research_runs",
+    paper_metrics: Annotated[
+        str | None,
+        typer.Option(
+            "--paper-metrics",
+            help="Optional path to paper performance metrics JSON file.",
+        ),
+    ] = "data/paper_analysis/paper_performance.json",
+    proposal: Annotated[
+        str | None,
+        typer.Option(
+            "--proposal",
+            help="Optional path to optimization proposal JSON file.",
+        ),
+    ] = "data/optimization/optimization_proposal.json",
+    output: Annotated[
+        str,
+        typer.Option(
+            "--output",
+            help="Output path for the readiness report JSON.",
+        ),
+    ] = "data/reports/readiness_report.json",
+) -> None:
+    """Generate a comprehensive readiness report for a strategy.
+
+    This command is research-only. It aggregates backtest, walk-forward
+    diagnostics, paper-trading performance, and optimization proposals.
+    No live trading, no broker calls, no profitability claims.
+    """
+    console.print("[cyan]Readiness Report Generator[/cyan]")
+
+    try:
+        generator = ReadinessReportGenerator(
+            artifact_directory=artifact_dir,
+            strategy_name=strategy,
+            paper_metrics_path=paper_metrics,
+            proposal_path=proposal,
+        )
+
+        readiness_report = generator.generate()
+        output_path = generator.save_report(readiness_report, output)
+
+        console.print(f"\n[green]Report saved to:[/green] {output_path}")
+
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
 @research_app.command("run")
 def research_run(
     strategy_id: Annotated[
@@ -1957,6 +2076,218 @@ def _print_overfitting_report(report) -> None:
     for issue in report.issues:
         issues.add_row(issue.severity, issue.code, issue.message)
     console.print(issues)
+
+
+@paper_app.command("performance")
+def paper_performance(
+    strategy: Annotated[
+        str | None,
+        typer.Option("--strategy", help="Strategy name to analyze. If not provided, analyzes all strategies."),
+    ] = None,
+    ledger_path: Annotated[
+        str,
+        typer.Option("--ledger-path", help="Path to paper execution ledger."),
+    ] = "data/paper_ledger/execution_log.jsonl",
+    output_dir: Annotated[
+        str,
+        typer.Option("--output-dir", help="Output directory for metrics."),
+    ] = "data/paper_analysis",
+) -> None:
+    """Analyze paper trading performance metrics.
+
+    This command is research-only. It analyzes the paper execution ledger
+    to compute performance metrics. No live trading, no broker calls.
+    """
+    console.print("[cyan]Paper Performance Analyzer[/cyan]")
+
+    analyzer = PaperPerformanceAnalyzer(ledger_path=ledger_path)
+    metrics = analyzer.compute_metrics(strategy_name=strategy)
+
+    output_path = save_metrics(metrics, output_dir)
+    console.print(f"\n[green]Metrics saved to:[/green] {output_path}")
+
+    table = Table(title="Paper Performance Metrics")
+    table.add_column("Metric")
+    table.add_column("Value")
+
+    table.add_row("Strategy", metrics.strategy_name)
+    table.add_row("Total Trades", str(metrics.total_trades))
+    table.add_row("Win Count", str(metrics.win_count))
+    table.add_row("Loss Count", str(metrics.loss_count))
+    table.add_row("Win Rate", f"{metrics.win_rate:.2%}")
+    table.add_row("Total P&L", f"${metrics.total_pnl:.2f}")
+    table.add_row("Avg P&L/Trade", f"${metrics.avg_pnl_per_trade:.2f}")
+    table.add_row("Max Drawdown", f"${metrics.max_drawdown:.2f}")
+    table.add_row("Sharpe Ratio", f"{metrics.sharpe_ratio:.3f}")
+    table.add_row("Profit Factor", f"{metrics.profit_factor:.3f}")
+
+    console.print(table)
+
+    console.print("\n[yellow]Disclaimer:[/yellow] Past paper performance does not guarantee future results.")
+
+
+@optimize_app.command("analyze")
+def optimize_analyze(
+    strategy: Annotated[
+        str,
+        typer.Argument(help="Strategy name to analyze."),
+    ],
+    artifact_directory: Annotated[
+        str,
+        typer.Option(
+            "--artifact-directory",
+            help="Directory containing research artifacts.",
+        ),
+    ] = "data/research",
+    paper_metrics: Annotated[
+        str | None,
+        typer.Option(
+            "--paper-metrics",
+            help="Path to paper performance metrics JSON file.",
+        ),
+    ] = "data/paper_analysis/paper_performance.json",
+    output_dir: Annotated[
+        str,
+        typer.Option(
+            "--output-dir",
+            help="Output directory for optimization proposal.",
+        ),
+    ] = "data/optimization",
+) -> None:
+    """Analyze strategy and produce an optimization proposal.
+
+    This command is research-only. It reads research artifacts and optionally
+    paper trading performance to propose parameter adjustments. No live trading,
+    no broker calls, no profitability claims.
+    """
+    console.print("[cyan]Adaptive Optimizer[/cyan]")
+
+    optimizer = AdaptiveOptimizer(
+        artifact_directory=artifact_directory,
+        paper_metrics_path=paper_metrics,
+    )
+
+    try:
+        proposal = optimizer.analyze(strategy)
+
+        output_path = optimizer.write_proposal(proposal, output_dir)
+        console.print(f"\n[green]Proposal saved to:[/green] {output_path}")
+
+        table = Table(title=f"Optimization Proposal: {strategy}")
+        table.add_column("Field")
+        table.add_column("Value")
+
+        table.add_row("Status", proposal.status)
+        table.add_row("Rationale", proposal.rationale[:100] + "..." if len(proposal.rationale) > 100 else proposal.rationale)
+
+        console.print(table)
+
+        if proposal.parameter_changes:
+            changes_table = Table(title="Proposed Parameter Changes")
+            changes_table.add_column("Parameter")
+            changes_table.add_column("Change")
+            for param, change in proposal.parameter_changes.items():
+                changes_table.add_row(param, change)
+            console.print(changes_table)
+
+        console.print("\n[yellow]Disclaimer:[/yellow] This is research-only proposal. No profitability is claimed.")
+
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
+@export_app.command("strategy")
+def export_strategy(
+    strategy: Annotated[
+        str,
+        typer.Option("--strategy", help="Strategy name to export."),
+    ],
+    artifact_dir: Annotated[
+        str,
+        typer.Option(
+            "--artifact-dir",
+            help="Directory containing research artifacts.",
+        ),
+    ] = "data/demo/research_runs",
+    output: Annotated[
+        str,
+        typer.Option(
+            "--output",
+            help="Output path for the export bundle zip file.",
+        ),
+    ] = "data/exports/strategy_bundle.zip",
+    strategy_file: Annotated[
+        str | None,
+        typer.Option(
+            "--strategy-file",
+            help="Optional path to strategy Python file.",
+        ),
+    ] = None,
+    model_file: Annotated[
+        str | None,
+        typer.Option(
+            "--model-file",
+            help="Optional path to serialized model file.",
+        ),
+    ] = None,
+    feature_config: Annotated[
+        str | None,
+        typer.Option(
+            "--feature-config",
+            help="Optional path to feature configuration JSON.",
+        ),
+    ] = None,
+    readiness_report: Annotated[
+        str | None,
+        typer.Option(
+            "--readiness-report",
+            help="Optional path to readiness report JSON.",
+        ),
+    ] = None,
+) -> None:
+    """Export a strategy bundle for external deployment.
+
+    This command is research-only. It packages strategy code, configuration,
+    and readiness report into a zip file. No live trading, no broker calls.
+    """
+    console.print("[cyan]Strategy Exporter[/cyan]")
+
+    try:
+        exporter = StrategyExporter(
+            strategy_name=strategy,
+            artifact_directory=artifact_dir,
+            output_zip_path=output,
+            strategy_file_path=strategy_file,
+            model_path=model_file,
+            feature_config_path=feature_config,
+            readiness_report_path=readiness_report,
+        )
+
+        bundle = exporter.create_bundle()
+
+        console.print(f"\n[green]Export bundle created:[/green] {output}")
+
+        table = Table(title=f"Bundle Contents: {bundle.strategy_name}")
+        table.add_column("File")
+        table.add_column("Description")
+        for file_info in bundle.manifest.get("files", []):
+            table.add_row(file_info["path"], file_info["description"])
+        console.print(table)
+
+        console.print(f"\n[yellow]Disclaimer:[/yellow] {bundle.disclaimer}")
+
+        if exporter.verify_bundle():
+            console.print("\n[green]Bundle verification: PASSED[/green]")
+        else:
+            console.print("\n[yellow]Bundle verification: FAILED (bundle may still be usable)[/yellow]")
+
+    except SecretDetectionError as e:
+        console.print(f"[red]Secret detected:[/red] {e}")
+        raise typer.Exit(code=1)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":

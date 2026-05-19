@@ -55,15 +55,23 @@ class AdaptiveOptimizer:
         "min_win_rate": 0.4,
     }
 
+    PAPER_THRESHOLDS = {
+        "min_win_rate": 0.35,
+        "max_drawdown": 0.4,
+        "sharpe_decline_factor": 0.6,
+    }
+
     def __init__(
         self,
         artifact_directory: str,
         allowed_statuses: list[str] | None = None,
         config: dict[str, Any] | None = None,
+        paper_metrics_path: str | None = None,
     ) -> None:
         self.artifact_directory = Path(artifact_directory)
         self.allowed_statuses = allowed_statuses or [self.STATUS_PROPOSED_FOR_REVIEW]
         self.config = config or {}
+        self.paper_metrics_path = paper_metrics_path
 
     def load_artifacts(self, strategy_name: str) -> dict[str, Any]:
         """Load the latest research artifacts for a strategy.
@@ -123,6 +131,24 @@ class AdaptiveOptimizer:
 
         run_dirs.sort(key=lambda x: x.name, reverse=True)
         return run_dirs[0]
+
+    def load_paper_metrics(self) -> dict[str, Any] | None:
+        """Load paper metrics from optional path if provided and exists.
+
+        Returns:
+            Dict containing paper metrics or None if not available.
+        """
+        if not self.paper_metrics_path:
+            return None
+
+        paper_path = Path(self.paper_metrics_path)
+        if not paper_path.exists():
+            return None
+
+        try:
+            return json.loads(paper_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
 
     def analyze(self, strategy_name: str) -> OptimizationProposal:
         """Analyze strategy artifacts and produce an optimization proposal.
@@ -188,6 +214,56 @@ class AdaptiveOptimizer:
                 based_on_artifacts=[f"{run_dir}/diagnostics.json"],
             )
 
+        paper_metrics = self.load_paper_metrics()
+        based_on_artifacts = [
+            f"{run_dir}/diagnostics.json",
+            f"{run_dir}/config.json",
+        ]
+
+        if paper_metrics:
+            paper_path_str = str(Path(self.paper_metrics_path).resolve())
+            based_on_artifacts.append(paper_path_str)
+
+            paper_win_rate = paper_metrics.get("win_rate", 0.0)
+            paper_max_drawdown = paper_metrics.get("max_drawdown", 0.0)
+            paper_sharpe = paper_metrics.get("sharpe_ratio", 0.0)
+
+            if paper_win_rate < self.PAPER_THRESHOLDS["min_win_rate"]:
+                return OptimizationProposal(
+                    strategy_name=strategy_name,
+                    status=self.STATUS_NEEDS_MORE_RESEARCH,
+                    rationale=f"Paper trading win rate ({paper_win_rate:.2%}) below minimum threshold ({self.PAPER_THRESHOLDS['min_win_rate']:.2%}). Paper performance too weak for proposals.",
+                    based_on_artifacts=based_on_artifacts,
+                )
+
+            if paper_max_drawdown > self.PAPER_THRESHOLDS["max_drawdown"]:
+                return OptimizationProposal(
+                    strategy_name=strategy_name,
+                    status=self.STATUS_NEEDS_MORE_RESEARCH,
+                    rationale=f"Paper trading max drawdown ({paper_max_drawdown:.2%}) exceeds maximum threshold ({self.PAPER_THRESHOLDS['max_drawdown']:.2%}). Paper performance too weak for proposals.",
+                    based_on_artifacts=based_on_artifacts,
+                )
+
+            decline_factor = self.PAPER_THRESHOLDS["sharpe_decline_factor"]
+            if sharpe_ratio > 0 and paper_sharpe < sharpe_ratio * decline_factor:
+                parameter_changes = self._propose_conservative_parameters(artifacts)
+                return OptimizationProposal(
+                    strategy_name=strategy_name,
+                    status=self.STATUS_PROPOSED_FOR_REVIEW,
+                    parameter_changes=parameter_changes,
+                    rationale=f"Paper performance lagging historical backtest. Paper Sharpe ({paper_sharpe:.2f}) is below {(decline_factor * 100):.0f}% of backtest Sharpe ({sharpe_ratio:.2f}). Proposing conservative adjustments: reduced position size, wider stop loss. Paper trading results indicate alignment with historical research; no guarantee of future performance.",
+                    based_on_artifacts=based_on_artifacts,
+                )
+
+            if paper_sharpe >= sharpe_ratio * decline_factor:
+                return OptimizationProposal(
+                    strategy_name=strategy_name,
+                    status=self.STATUS_PROPOSED_FOR_REVIEW,
+                    parameter_changes=self._propose_parameter_changes(artifacts),
+                    rationale="Paper trading results indicate alignment with historical research. No guarantee of future performance. Parameters proposed based on combined backtest and paper performance analysis.",
+                    based_on_artifacts=based_on_artifacts,
+                )
+
         parameter_changes = self._propose_parameter_changes(artifacts)
 
         return OptimizationProposal(
@@ -231,6 +307,24 @@ class AdaptiveOptimizer:
 
         if not changes:
             changes["general"] = "Minor tuning (5% parameter adjustment) recommended"
+
+        return changes
+
+    def _propose_conservative_parameters(self, artifacts: dict[str, Any]) -> dict[str, Any]:
+        """Propose conservative parameter adjustments when paper underperforms backtest."""
+        config = artifacts.get("config", {})
+        changes = {}
+
+        changes["position_size"] = "Reduce position size by 10% for more conservative risk management"
+
+        if "stop_loss_pct" in config:
+            changes["stop_loss"] = "Widen stop loss by 5% to reduce premature exits during volatility"
+
+        if "entry_min_return" in str(config):
+            changes["entry_threshold"] = "Slightly increase entry threshold to reduce trade frequency"
+
+        if not changes:
+            changes["general"] = "Apply conservative 10% parameter reduction across all risk-related settings"
 
         return changes
 

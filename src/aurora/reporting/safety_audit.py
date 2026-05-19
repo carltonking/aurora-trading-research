@@ -29,14 +29,19 @@ SAFETY_AUDIT_FLAGS = {
 
 SUPPORTED_SUFFIXES = {".py", ".md", ".toml", ".yaml", ".yml", ".txt"}
 DEFAULT_ALLOWLISTED_PATHS = [
-    "src/aurora/brokers/base.py",
-    "src/aurora/brokers/alpaca_paper.py",
+    "src/aurora/brokers/",
     "src/aurora/execution",
     "src/aurora/risk",
     "src/aurora/readiness",
     "src/aurora/review",
     "src/aurora/strategies/prompt_lab.py",
+    "src/aurora/strategies/archetypes/",
+    "src/aurora/strategies/builder.py",
     "src/aurora/reporting/safety_audit.py",
+    "src/aurora/reporting/readiness_report.py",
+    "src/aurora/export/",
+    "src/aurora/analysis/",
+    "src/aurora/optimization/",
     "tests",
 ]
 NEGATED_CONTEXT_MARKERS = (
