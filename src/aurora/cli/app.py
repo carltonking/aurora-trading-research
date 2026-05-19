@@ -39,6 +39,7 @@ from aurora.models.registry import list_model_artifacts, load_model_artifact, sa
 from aurora.models.train import train_baseline_classifier
 from aurora.optimization.adaptive_optimizer import AdaptiveOptimizer
 from aurora.analysis.paper_performance import PaperPerformanceAnalyzer, save_metrics
+from aurora.analysis.monte_carlo import MonteCarloConfig, MonteCarloSimulator, load_trades_from_backtest
 from aurora.readiness.paper_sim import (
     PaperSimReadinessConfig,
     PaperSimReadinessError,
@@ -120,10 +121,12 @@ demo_app = typer.Typer(help="Synthetic local demo workflow commands")
 paper_app = typer.Typer(help="Paper performance analysis commands")
 optimize_app = typer.Typer(help="Adaptive optimizer commands")
 export_app = typer.Typer(help="Strategy export bundle commands")
+analyze_app = typer.Typer(help="Analysis commands")
 app.add_typer(data_app, name="data")
 app.add_typer(paper_app, name="paper")
 app.add_typer(optimize_app, name="optimize")
 app.add_typer(export_app, name="export")
+app.add_typer(analyze_app, name="analyze")
 app.add_typer(features_app, name="features")
 app.add_typer(models_app, name="models")
 app.add_typer(strategies_app, name="strategies")
@@ -2285,6 +2288,99 @@ def export_strategy(
     except SecretDetectionError as e:
         console.print(f"[red]Secret detected:[/red] {e}")
         raise typer.Exit(code=1)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
+@analyze_app.command("monte-carlo")
+def analyze_monte_carlo(
+    strategy: Annotated[
+        str,
+        typer.Option("--strategy", help="Strategy name."),
+    ],
+    backtest_file: Annotated[
+        str,
+        typer.Option(
+            "--backtest-file",
+            help="Path to backtest JSON file.",
+        ),
+    ],
+    output: Annotated[
+        str,
+        typer.Option(
+            "--output",
+            help="Output path for Monte Carlo results.",
+        ),
+    ] = "data/analysis/monte_carlo_result.json",
+    simulations: Annotated[
+        int,
+        typer.Option(
+            "--simulations",
+            help="Number of Monte Carlo simulations.",
+        ),
+    ] = 1000,
+    seed: Annotated[
+        int | None,
+        typer.Option(
+            "--seed",
+            help="Random seed for reproducibility.",
+        ),
+    ] = None,
+) -> None:
+    """Run Monte Carlo simulation on backtest results.
+
+    This command is research-only. It generates distributions of possible
+    strategy outcomes by resampling trade sequences. No live trading, no broker calls.
+    """
+    console.print("[cyan]Monte Carlo Simulation[/cyan]")
+
+    try:
+        config = MonteCarloConfig(
+            num_simulations=simulations,
+            method="trade_reshuffle",
+            random_seed=seed,
+        )
+
+        console.print(f"Loading trades from: {backtest_file}")
+        trades = load_trades_from_backtest(backtest_file)
+
+        if not trades:
+            console.print("[red]No trades found in backtest file.[/red]")
+            raise typer.Exit(code=1)
+
+        console.print(f"Loaded {len(trades)} trades")
+
+        simulator = MonteCarloSimulator(config)
+        console.print(f"Running {simulations} simulations...")
+
+        result = simulator.run(trades, strategy_name=strategy)
+
+        output_path = simulator.save_result(result, output)
+        console.print(f"\n[green]Results saved to:[/green] {output_path}")
+
+        table = Table(title=f"Monte Carlo Results: {strategy}")
+        table.add_column("Metric")
+        table.add_column("Mean")
+        table.add_column("Median")
+        table.add_column("Std")
+        table.add_column("5th Percentile")
+        table.add_column("95th Percentile")
+
+        for metric, stats in result.summary_stats.items():
+            table.add_row(
+                metric,
+                f"{stats['mean']:.4f}",
+                f"{stats['median']:.4f}",
+                f"{stats['std']:.4f}",
+                f"{stats['p5']:.4f}",
+                f"{stats['p95']:.4f}",
+            )
+
+        console.print(table)
+
+        console.print("\n[yellow]Disclaimer:[/yellow] This is research-only simulation. Past performance does not guarantee future results.")
+
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(code=1)

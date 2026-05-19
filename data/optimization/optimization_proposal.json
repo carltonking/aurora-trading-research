@@ -1,0 +1,11 @@
+{
+  "based_on_artifacts": [
+    "data/demo/research_runs/20260519T203339Z_demo-momentum-strategy/diagnostics.json"
+  ],
+  "optimizer_version": "0.1.0",
+  "parameter_changes": {},
+  "rationale": "Sharpe ratio (-0.15) below threshold (0.5). Needs more research.",
+  "status": "NEEDS_MORE_RESEARCH",
+  "strategy_name": "demo_momentum_strategy",
+  "timestamp": "2026-05-19T20:34:09.303402+00:00"
+}
