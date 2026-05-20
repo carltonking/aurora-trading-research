@@ -34,7 +34,7 @@ class FakeBrokerClient:
     def health_check(self) -> dict:
         return {"ok": True}
 
-    def submit_paper_order(self, symbol, qty, side, order_type):
+    def submit_paper_order(self, symbol, qty, side, order_type, price=0.0):
         self.submit_called = True
         if self.should_fail:
             raise Exception("Broker failure")
@@ -44,6 +44,10 @@ class FakeBrokerClient:
             "qty": qty,
             "side": side,
             "status": "accepted",
+            "price": price,
+            "fill_price": price if price > 0 else 100.0,
+            "slippage_applied": 0.0,
+            "commission_charged": 0.0,
         }
 
     def cancel_paper_order(self, order_id):

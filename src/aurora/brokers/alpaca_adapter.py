@@ -16,6 +16,9 @@ import os
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+from aurora.brokers.commission import CommissionModel, NoCommission
+from aurora.brokers.slippage import NoSlippage, SlippageModel
+
 
 @runtime_checkable
 class AlpacaPaperBrokerProtocol(Protocol):
@@ -37,6 +40,7 @@ class AlpacaPaperBrokerProtocol(Protocol):
         qty: int,
         side: str,
         order_type: str = "market",
+        price: float = 0.0,
     ) -> dict[str, Any]:
         """Submit a paper order.
 
@@ -45,6 +49,7 @@ class AlpacaPaperBrokerProtocol(Protocol):
             qty: Number of shares.
             side: 'buy' or 'sell'.
             order_type: Order type (default: 'market').
+            price: Optional price for limit orders (default: 0 for market).
 
         Returns:
             Order status dict.
@@ -332,6 +337,14 @@ class FakeAlpacaPaperClient:
     This client never makes network calls and returns canned responses.
     """
 
+    def __init__(
+        self,
+        slippage_model: SlippageModel | None = None,
+        commission_model: CommissionModel | None = None,
+    ) -> None:
+        self._slippage_model = slippage_model or NoSlippage()
+        self._commission_model = commission_model or NoCommission()
+
     def health_check(self) -> dict[str, Any]:
         return {
             "ok": True,
@@ -354,7 +367,12 @@ class FakeAlpacaPaperClient:
         qty: int,
         side: str,
         order_type: str = "market",
+        price: float = 0.0,
     ) -> dict[str, Any]:
+        fill_price = price if price > 0 else 100.0
+        adjusted_price = self._slippage_model.apply(fill_price, side, qty)
+        commission = self._commission_model.calculate(adjusted_price * qty, qty)
+
         return {
             "id": f"fake-order-{symbol}-{qty}-{side}",
             "symbol": symbol,
@@ -363,6 +381,9 @@ class FakeAlpacaPaperClient:
             "type": order_type,
             "status": "accepted",
             "paper": True,
+            "fill_price": adjusted_price,
+            "slippage_applied": adjusted_price - fill_price,
+            "commission_charged": commission,
         }
 
     def cancel_paper_order(self, order_id: str) -> dict[str, Any]:

@@ -147,6 +147,7 @@ class PaperExecutor:
                 qty=request.quantity,
                 side=request.side,
                 order_type=request.order_type,
+                price=request.price,
             )
             result = PaperExecutionResult(
                 request=request,
