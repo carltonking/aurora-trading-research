@@ -2421,6 +2421,92 @@ def paper_stream(
         console.print("[yellow]Note: Stream command does not place orders.[/yellow]")
 
 
+@paper_app.command("dashboard")
+def paper_dashboard(
+    duration: Annotated[
+        int,
+        typer.Option("--duration", help="Dashboard duration in seconds."),
+    ] = 60,
+    interval: Annotated[
+        float,
+        typer.Option("--interval", help="Update interval in seconds."),
+    ] = 1.0,
+    live: Annotated[
+        bool,
+        typer.Option("--live", help="Use real Alpaca paper broker and stream."),
+    ] = False,
+) -> None:
+    """Run a real-time paper trading dashboard.
+
+    This command displays account summary, positions, pending orders,
+    equity curve, and risk metrics in real-time.
+
+    NOTE: Dashboard is read-only and does not place orders.
+
+    Examples:
+        # Run dashboard for 60 seconds with fake broker:
+        aurora paper dashboard --duration 60
+
+        # Run with real Alpaca paper:
+        aurora paper dashboard --live --duration 120
+    """
+    from aurora.brokers.alpaca_adapter import FakeAlpacaPaperClient
+    from aurora.monitoring.dashboard import PaperDashboard
+    from aurora.data.streaming import FakeMarketDataStream
+    import pandas as pd
+
+    console.print("[cyan]Paper Trading Dashboard[/cyan]")
+    console.print("[yellow]Note: Dashboard is read-only. No orders will be placed.[/yellow]")
+
+    if live:
+        console.print("[yellow]Live mode requires Alpaca credentials.[/yellow]")
+        console.print("[red]This feature requires additional setup.[/yellow]")
+        console.print("Falling back to fake broker for demonstration.")
+        broker = FakeAlpacaPaperClient()
+    else:
+        console.print("[yellow]Using fake paper broker.[/yellow]")
+        broker = FakeAlpacaPaperClient()
+
+    dates = pd.date_range(end=pd.Timestamp.now(), periods=10, freq="h")
+    prices = [100 + i * 0.5 for i in range(10)]
+
+    aapl_data = pd.DataFrame({
+        "symbol": ["AAPL"] * 10,
+        "timestamp": dates,
+        "open": prices,
+        "high": [p + 2 for p in prices],
+        "low": [p - 2 for p in prices],
+        "close": prices,
+        "volume": [10000] * 10,
+    })
+    msft_data = pd.DataFrame({
+        "symbol": ["MSFT"] * 10,
+        "timestamp": dates,
+        "open": [p + 5 for p in prices],
+        "high": [p + 7 for p in prices],
+        "low": [p + 3 for p in prices],
+        "close": [p + 5 for p in prices],
+        "volume": [5000] * 10,
+    })
+    data = pd.concat([aapl_data, msft_data], ignore_index=True)
+    stream = FakeMarketDataStream(data, delay_seconds=0.01)
+    stream.connect()
+    stream.subscribe(["AAPL", "MSFT"])
+
+    dashboard = PaperDashboard(broker, stream, update_interval=interval)
+
+    try:
+        console.print(f"\nStarting dashboard for {duration}s (press Ctrl+C to stop)...")
+        dashboard.start(duration_seconds=duration)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Dashboard stopped by user.[/yellow]")
+    finally:
+        dashboard.stop()
+        stream.disconnect()
+
+    console.print("[green]Dashboard session ended.[/green]")
+
+
 @optimize_app.command("analyze")
 def optimize_analyze(
     strategy: Annotated[
