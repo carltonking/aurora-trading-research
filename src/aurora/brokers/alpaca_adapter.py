@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from aurora.brokers.commission import CommissionModel, NoCommission
+from aurora.brokers.fill_simulator import FillModel, ImmediateFill
+from aurora.brokers.latency import LatencyModel, NoLatency
 from aurora.brokers.slippage import NoSlippage, SlippageModel
 
 
@@ -341,9 +343,13 @@ class FakeAlpacaPaperClient:
         self,
         slippage_model: SlippageModel | None = None,
         commission_model: CommissionModel | None = None,
+        latency_model: LatencyModel | None = None,
+        fill_model: FillModel | None = None,
     ) -> None:
         self._slippage_model = slippage_model or NoSlippage()
         self._commission_model = commission_model or NoCommission()
+        self._latency_model = latency_model or NoLatency()
+        self._fill_model = fill_model or ImmediateFill()
 
     def health_check(self) -> dict[str, Any]:
         return {
@@ -371,7 +377,21 @@ class FakeAlpacaPaperClient:
     ) -> dict[str, Any]:
         fill_price = price if price > 0 else 100.0
         adjusted_price = self._slippage_model.apply(fill_price, side, qty)
-        commission = self._commission_model.calculate(adjusted_price * qty, qty)
+
+        latency_seconds = self._latency_model.delay({"symbol": symbol, "qty": qty, "side": side})
+
+        order_dict = {
+            "symbol": symbol,
+            "qty": qty,
+            "side": side,
+            "price": adjusted_price,
+            "order_type": order_type,
+        }
+        fill_result = self._fill_model.simulate_fill(order_dict)
+
+        filled_qty = fill_result["filled_qty"]
+        final_price = fill_result["average_price"]
+        commission = self._commission_model.calculate(final_price * filled_qty, filled_qty)
 
         return {
             "id": f"fake-order-{symbol}-{qty}-{side}",
@@ -381,9 +401,13 @@ class FakeAlpacaPaperClient:
             "type": order_type,
             "status": "accepted",
             "paper": True,
-            "fill_price": adjusted_price,
+            "fill_price": final_price,
+            "filled_qty": filled_qty,
+            "fill_status": fill_result["status"],
+            "fill_reason": fill_result.get("reason", ""),
             "slippage_applied": adjusted_price - fill_price,
             "commission_charged": commission,
+            "latency_seconds": latency_seconds,
         }
 
     def cancel_paper_order(self, order_id: str) -> dict[str, Any]:
