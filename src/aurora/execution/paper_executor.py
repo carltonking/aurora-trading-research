@@ -24,6 +24,7 @@ from aurora.risk.models import (
     RiskDecision,
     TradeCandidate,
 )
+from aurora.risk.portfolio_risk import PortfolioRiskConfig
 from aurora.risk.risk_manager import RiskManager
 
 
@@ -93,6 +94,7 @@ class PaperExecutor:
         ledger: PaperLedger | None = None,
         portfolio: PortfolioState | None = None,
         stream: Optional[MarketDataStream] = None,
+        portfolio_risk_config: PortfolioRiskConfig | None = None,
     ) -> None:
         self.risk_manager = risk_manager
         self.broker_client = broker_client
@@ -104,6 +106,7 @@ class PaperExecutor:
         )
         self._stream = stream
         self._stream_prices: dict[str, float] = {}
+        self._portfolio_risk_config = portfolio_risk_config
 
     def execute(self, request: PaperExecutionRequest) -> PaperExecutionResult:
         """Execute a paper order, gating through RiskManager.
@@ -127,6 +130,27 @@ class PaperExecutor:
             )
             self._record_execution(result)
             return result
+
+        if self._portfolio_risk_config is not None and request.side == "buy":
+            order_value = request.price * request.quantity if request.price > 0 else 100.0 * request.quantity
+            portfolio_decision = self.risk_manager.evaluate_portfolio_order(
+                portfolio_state=self.portfolio,
+                order_value=order_value,
+                order_side=request.side,
+                symbol=request.symbol,
+                portfolio_config=self._portfolio_risk_config,
+            )
+            self.ledger.record_risk_decision(portfolio_decision)
+
+            if portfolio_decision.status in (RISK_REJECTED, RISK_KILL_SWITCH_TRIGGERED):
+                result = PaperExecutionResult(
+                    request=request,
+                    risk_decision=portfolio_decision,
+                    broker_response=None,
+                    reason=f"Portfolio risk: {portfolio_decision.status}. Reasons: {'; '.join(portfolio_decision.reasons)}",
+                )
+                self._record_execution(result)
+                return result
 
         if decision.status == RISK_REDUCED_SIZE:
             request = PaperExecutionRequest(

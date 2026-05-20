@@ -14,6 +14,7 @@ from aurora.risk.models import (
     RiskDecision,
     TradeCandidate,
 )
+from aurora.risk.portfolio_risk import PortfolioRiskConfig
 
 
 class RiskManager:
@@ -246,3 +247,94 @@ class RiskManager:
             return datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError as exc:
             raise RiskEvaluationError(f"Invalid ISO timestamp: {value}") from exc
+
+    def evaluate_portfolio_order(
+        self,
+        portfolio_state: PortfolioState,
+        order_value: float,
+        order_side: str,
+        symbol: str,
+        portfolio_config: PortfolioRiskConfig | None = None,
+    ) -> RiskDecision:
+        """Evaluate a proposed order against portfolio-level risk limits.
+
+        Args:
+            portfolio_state: Current portfolio state.
+            order_value: Dollar value of the proposed order.
+            order_side: "buy" or "sell".
+            symbol: Stock symbol for the order.
+            portfolio_config: Portfolio risk configuration (loaded from env/file if None).
+
+        Returns:
+            RiskDecision with APPROVED or REJECTED status.
+        """
+        if portfolio_config is None:
+            portfolio_config = PortfolioRiskConfig.from_env()
+
+        equity = portfolio_state.equity or 100000.0
+        current_exposure = portfolio_state.market_value or 0.0
+
+        new_exposure = current_exposure + order_value if order_side == "buy" else current_exposure
+        total_exposure_pct = new_exposure / equity if equity > 0 else 0
+
+        if total_exposure_pct > portfolio_config.max_total_exposure:
+            return RiskDecision(
+                status=RISK_REJECTED,
+                approved=False,
+                original_quantity=0,
+                final_quantity=0,
+                reasons=[f"max_total_exposure: {total_exposure_pct:.2%} > {portfolio_config.max_total_exposure:.2%}"],
+                candidate=None,
+            )
+
+        position_concentration = order_value / equity if equity > 0 else 0
+        if order_side == "buy" and position_concentration > portfolio_config.max_position_concentration:
+            return RiskDecision(
+                status=RISK_REJECTED,
+                approved=False,
+                original_quantity=0,
+                final_quantity=0,
+                reasons=[f"max_position_concentration: {position_concentration:.2%} > {portfolio_config.max_position_concentration:.2%}"],
+                candidate=None,
+            )
+
+        daily_loss = getattr(portfolio_state, "daily_pnl", 0.0) or 0.0
+        if daily_loss < -portfolio_config.max_daily_loss:
+            return RiskDecision(
+                status=RISK_REJECTED,
+                approved=False,
+                original_quantity=0,
+                final_quantity=0,
+                reasons=[f"max_daily_loss: ${daily_loss:.2f} < -${portfolio_config.max_daily_loss:.2f}"],
+                candidate=None,
+            )
+
+        portfolio_drawdown = getattr(portfolio_state, "drawdown", 0.0) or 0.0
+        if portfolio_drawdown > portfolio_config.kill_switch_drawdown:
+            return RiskDecision(
+                status=RISK_KILL_SWITCH_TRIGGERED,
+                approved=False,
+                original_quantity=0,
+                final_quantity=0,
+                reasons=[f"kill_switch: drawdown {portfolio_drawdown:.2%} > {portfolio_config.kill_switch_drawdown:.2%}"],
+                candidate=None,
+            )
+
+        if portfolio_drawdown > portfolio_config.max_portfolio_drawdown:
+            return RiskDecision(
+                status=RISK_REJECTED,
+                approved=False,
+                original_quantity=0,
+                final_quantity=0,
+                reasons=[f"max_portfolio_drawdown: {portfolio_drawdown:.2%} > {portfolio_config.max_portfolio_drawdown:.2%}"],
+                candidate=None,
+            )
+
+        return RiskDecision(
+            status=RISK_APPROVED,
+            approved=True,
+            original_quantity=0,
+            final_quantity=0,
+            reasons=["portfolio_risk_approved"],
+            candidate=None,
+        )
