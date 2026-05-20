@@ -35,7 +35,7 @@ class SchedulerScreen(Screen):
             Static("[bold]Task Scheduler[/bold]", id="title"),
             Container(
                 Label("Schedule YAML Configuration:", id="yaml_label"),
-                TextArea.code(self.DEFAULT_YAML, language="yaml", id="schedule_yaml"),
+                TextArea(self.DEFAULT_YAML, language="yaml", id="schedule_yaml"),
                 Horizontal(
                     Button("Validate", variant="primary", id="validate_btn"),
                     Button("Start Scheduler", variant="success", id="start_btn"),
