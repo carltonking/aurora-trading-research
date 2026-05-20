@@ -11,8 +11,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 from aurora.analysis.paper_performance import PaperMetrics
 from aurora.optimization.adaptive_optimizer import OptimizationProposal
+from aurora.reporting.plotting import plot_combined_report
 
 
 @dataclass
@@ -313,12 +316,22 @@ class ReadinessReportGenerator:
 
         return sections
 
-    def save_report(self, report: ReadinessReport, output_path: str) -> Path:
+    def save_report(
+        self,
+        report: ReadinessReport,
+        output_path: str,
+        generate_charts: bool = False,
+        equity_series: "pd.Series | None" = None,
+        trades: list[dict] | None = None,
+    ) -> Path:
         """Save report as JSON and print markdown summary.
 
         Args:
             report: The readiness report to save.
             output_path: Path to save the JSON report.
+            generate_charts: If True, generate performance charts.
+            equity_series: Optional equity series for charting.
+            trades: Optional list of trades for charting.
 
         Returns:
             Path to the saved JSON file.
@@ -328,6 +341,15 @@ class ReadinessReportGenerator:
 
         with output_file.open("w", encoding="utf-8") as f:
             json.dump(report.to_dict(), f, indent=2, sort_keys=False)
+
+        if generate_charts and equity_series is not None:
+            chart_path = plot_combined_report(
+                equity_series=equity_series,
+                trades=trades,
+                output_dir=str(output_file.parent),
+            )
+            if chart_path:
+                print(f"\n[Chart] Performance chart saved to: {chart_path}")
 
         self._print_markdown_summary(report)
 

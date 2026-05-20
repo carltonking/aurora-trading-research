@@ -19,6 +19,9 @@ from aurora.data.cache import cache_key, load_market_data, save_market_data
 from aurora.data.quality import DataQualityReport, validate_ohlcv_quality
 from aurora.data.yfinance_source import YFinanceDataSource
 from aurora.data.universe import Universe, UniverseProvider
+from aurora.data.alternative.fred_source import FredConfig, FredSource, create_fred_source
+from aurora.data.alternative.sec_source import SecConfig, SecSource, create_sec_source
+from aurora.data.alternative.news_source import NewsConfig, NewsSource, create_news_source
 from aurora.backtesting.portfolio_backtest import run_portfolio_backtest, save_portfolio_result
 from aurora.demo.workflow import DemoWorkflowConfig, DemoWorkflowError, run_demo_workflow
 from aurora.execution.ledger import PaperLedger
@@ -65,6 +68,7 @@ from aurora.readiness.paper_sim_plan import (
 from aurora.risk.exceptions import RiskConfigError, RiskEvaluationError
 from aurora.risk.models import PortfolioState, RiskConfig, TradeCandidate, risk_decision_to_dict
 from aurora.risk.risk_manager import RiskManager
+from aurora.reporting.artifact_diff import ArtifactDiffer, create_differ
 from aurora.reporting.artifact_packet import (
     ArtifactPacketConfig,
     ArtifactPacketError,
@@ -106,6 +110,16 @@ from aurora.strategies.registry import (
     save_strategy_config,
 )
 from aurora.strategies.builder import StrategyBuilder, StrategyBuilderError
+from aurora.config.project_config import ProjectConfig, write_default_config
+from aurora.scheduling.scheduler import TaskScheduler, validate_schedule
+from aurora.web.app import APP_HOST, APP_PORT
+from aurora.plugins.registry import PluginRegistry, DEFAULT_PLUGIN_DIR
+from aurora.security.sandbox import (
+    is_sandbox_enabled,
+    SandboxValidator,
+    SandboxViolationError,
+)
+from aurora.deployment.checklist import DeploymentChecklist, MANDATORY_DISCLAIMER
 from aurora.validation.exceptions import AuroraValidationError
 from aurora.validation.overfitting import diagnose_backtest_overfitting
 from aurora.validation.report import (
@@ -134,6 +148,13 @@ paper_app = typer.Typer(help="Paper performance analysis commands")
 optimize_app = typer.Typer(help="Adaptive optimizer commands")
 export_app = typer.Typer(help="Strategy export bundle commands")
 analyze_app = typer.Typer(help="Analysis commands")
+artifacts_app = typer.Typer(help="Artifact management and diff commands")
+config_app = typer.Typer(help="Project configuration commands")
+scheduler_app = typer.Typer(help="Task scheduler commands")
+web_app = typer.Typer(help="Web UI commands")
+plugins_app = typer.Typer(help="Plugin management commands")
+security_app = typer.Typer(help="Security and sandbox commands")
+deployment_app = typer.Typer(help="Deployment readiness commands")
 app.add_typer(data_app, name="data")
 app.add_typer(paper_app, name="paper")
 app.add_typer(optimize_app, name="optimize")
@@ -151,6 +172,13 @@ app.add_typer(research_app, name="research")
 app.add_typer(review_app, name="review")
 app.add_typer(readiness_app, name="readiness")
 app.add_typer(demo_app, name="demo")
+app.add_typer(artifacts_app, name="artifacts")
+app.add_typer(config_app, name="config")
+app.add_typer(scheduler_app, name="scheduler")
+app.add_typer(web_app, name="web")
+app.add_typer(plugins_app, name="plugins")
+app.add_typer(security_app, name="security")
+app.add_typer(deployment_app, name="deploy")
 console = Console()
 
 
@@ -259,6 +287,149 @@ def data_quality(
     _print_quality_report(report)
     if not report.ok:
         raise typer.Exit(1)
+
+
+@data_app.command("fred")
+def data_fred(
+    series: Annotated[
+        str,
+        typer.Option("--series", "-s", help="FRED series ID (e.g., GDP, UNRATE)."),
+    ] = "GDP",
+    start_date: Annotated[
+        str | None,
+        typer.Option("--start", help="Start date (YYYY-MM-DD)."),
+    ] = None,
+    end_date: Annotated[
+        str | None,
+        typer.Option("--end", help="End date (YYYY-MM-DD)."),
+    ] = None,
+) -> None:
+    """Fetch data from FRED (Federal Reserve Economic Data).
+
+    Requires FRED_ENABLED=true and FRED_API_KEY environment variables.
+    This command is research-only. No profitability claimed.
+    """
+    try:
+        fred_source = create_fred_source()
+        if fred_source is None:
+            console.print("[yellow]FRED source not enabled.[/yellow]")
+            console.print("Set FRED_ENABLED=true and FRED_API_KEY to enable.")
+            raise typer.Exit(1)
+
+        console.print(f"[cyan]Fetching FRED series:[/cyan] {series}")
+
+        df = fred_source.fetch_series(series, start_date, end_date)
+
+        if df.empty:
+            console.print("[yellow]No data returned[/yellow]")
+        else:
+            console.print(f"[green]Retrieved {len(df)} data points[/green]")
+            console.print(df.to_string(index=False))
+
+    except ImportError as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        raise typer.Exit(1)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        raise typer.Exit(1)
+
+    console.print("\n[yellow]Disclaimer:[/yellow] This is research-only data. No profitability claimed.")
+
+
+@data_app.command("sec")
+def data_sec(
+    ticker: Annotated[
+        str,
+        typer.Option("--ticker", "-t", help="Stock ticker (e.g., AAPL)."),
+    ],
+    form_type: Annotated[
+        str,
+        typer.Option("--form", "-f", help="Form type (e.g., 10-K, 10-Q)."),
+    ] = "10-K",
+    limit: Annotated[
+        int,
+        typer.Option("--limit", "-l", help="Number of filings to fetch."),
+    ] = 5,
+) -> None:
+    """Fetch filings from SEC EDGAR.
+
+    Requires SEC_ENABLED=true environment variable.
+    This command is research-only. No profitability claimed.
+    """
+    try:
+        sec_source = create_sec_source()
+        if sec_source is None:
+            console.print("[yellow]SEC source not enabled.[/yellow]")
+            console.print("Set SEC_ENABLED=true to enable.")
+            raise typer.Exit(1)
+
+        console.print(f"[cyan]Fetching {form_type} filings for:[/cyan] {ticker}")
+
+        filings = sec_source.fetch_filings(ticker, form_type, limit)
+
+        if not filings:
+            console.print("[yellow]No filings found[/yellow]")
+        else:
+            console.print(f"[green]Found {len(filings)} filing(s)[/green]")
+            for filing in filings:
+                console.print(f"  - {filing.get('filed_date')}: {filing.get('form_type')}")
+
+        console.print("\n[cyan]Sentiment Analysis:[/cyan]")
+        sentiment = sec_source.extract_sentiment(ticker)
+        console.print(f"  Sentiment: {sentiment.get('sentiment')}")
+        console.print(f"  Source: {sentiment.get('source')}")
+
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        raise typer.Exit(1)
+
+    console.print("\n[yellow]Disclaimer:[/yellow] This is research-only data. No profitability claimed.")
+
+
+@data_app.command("news")
+def data_news(
+    ticker: Annotated[
+        str,
+        typer.Option("--ticker", "-t", help="Stock ticker (e.g., AAPL)."),
+    ],
+    days: Annotated[
+        int,
+        typer.Option("--days", "-d", help="Number of days to look back."),
+    ] = 7,
+    limit: Annotated[
+        int,
+        typer.Option("--limit", "-l", help="Maximum articles to return."),
+    ] = 10,
+) -> None:
+    """Fetch news articles for a ticker.
+
+    Requires NEWS_ENABLED=true environment variable.
+    This command is research-only. No profitability claimed.
+    """
+    try:
+        news_source = create_news_source()
+        if news_source is None:
+            console.print("[yellow]News source not enabled.[/yellow]")
+            console.print("Set NEWS_ENABLED=true and NEWS_API_KEY to enable.")
+            raise typer.Exit(1)
+
+        console.print(f"[cyan]Fetching news for:[/cyan] {ticker}")
+
+        articles = news_source.fetch_news(ticker, limit=limit)
+
+        if not articles:
+            console.print("[yellow]No articles found[/yellow]")
+        else:
+            console.print(f"[green]Found {len(articles)} article(s)[/green]")
+            for article in articles:
+                console.print(f"  - {article.get('title')}")
+                console.print(f"    {article.get('published_at')}")
+
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        raise typer.Exit(1)
+
+    console.print("\n[yellow]Disclaimer:[/yellow] This is research-only data. No profitability claimed.")
 
 
 @features_app.command("build")
@@ -812,7 +983,8 @@ def backtest_portfolio(
             initial_capital=initial_capital,
         )
 
-        output_path = save_portfolio_result(result, output)
+        artifact_differ = create_differ(Path(output).parent.resolve().parent / "diffs")
+        output_path = save_portfolio_result(result, output, artifact_differ=artifact_differ)
         console.print(f"\n[green]Results saved to:[/green] {output_path}")
 
         table = Table(title=f"Portfolio Metrics: {result.universe_name}")
@@ -2543,6 +2715,8 @@ def optimize_analyze(
     """
     console.print("[cyan]Adaptive Optimizer[/cyan]")
 
+    artifact_differ = create_differ(output_dir)
+
     optimizer = AdaptiveOptimizer(
         artifact_directory=artifact_directory,
         paper_metrics_path=paper_metrics,
@@ -2551,7 +2725,7 @@ def optimize_analyze(
     try:
         proposal = optimizer.analyze(strategy)
 
-        output_path = optimizer.write_proposal(proposal, output_dir)
+        output_path = optimizer.write_proposal(proposal, output_dir, artifact_differ=artifact_differ)
         console.print(f"\n[green]Proposal saved to:[/green] {output_path}")
 
         table = Table(title=f"Optimization Proposal: {strategy}")
@@ -3256,6 +3430,648 @@ def analyze_sensitivity(
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(code=1)
+
+
+@artifacts_app.command("diff")
+def artifacts_diff(
+    artifact_name: Annotated[
+        str,
+        typer.Argument(help="Name of the artifact (e.g., 'portfolio_result', 'optimization_proposal')."),
+    ],
+    artifact_dir: Annotated[
+        str,
+        typer.Option("--artifact-dir", help="Directory containing the artifact."),
+    ] = "data",
+) -> None:
+    """Show diff between current and previous version of an artifact.
+
+    This command is research-only. It compares two versions of artifacts
+    to track changes between runs. No live trading, no broker calls.
+    """
+    differ = ArtifactDiffer(artifact_dir)
+
+    if not differ.is_enabled:
+        console.print("[yellow]Artifact diffing is not enabled.[/yellow]")
+        console.print("Set AURORA_DIFF_ARTIFACTS=true to enable diffing.")
+        console.print("Or use: PYTHONPATH=src AURORA_DIFF_ARTIFACTS=true aurora artifacts diff ...")
+        raise typer.Exit(code=1)
+
+    diff_result = differ.diff_latest(artifact_name)
+
+    if "error" in diff_result:
+        console.print(f"[yellow]Note:[/yellow] {diff_result['error']}")
+        if diff_result.get("message"):
+            console.print(f"  {diff_result['message']}")
+        raise typer.Exit(code=1)
+
+    if diff_result.get("status") == "no_previous":
+        console.print(f"[yellow]No previous version found for artifact:[/yellow] {artifact_name}")
+        console.print("This is the first run of this artifact.")
+        raise typer.Exit(code=1)
+
+    console.print(f"[cyan]Artifact Diff:[/cyan] {artifact_name}")
+    console.print(f"Generated: {diff_result.get('generated_at', 'unknown')}")
+
+    diff = diff_result.get("diff", {})
+
+    if diff.get("added"):
+        console.print("\n[green]Added keys:[/green]")
+        for key, value in diff["added"].items():
+            console.print(f"  {key}: {value}")
+
+    if diff.get("removed"):
+        console.print("\n[red]Removed keys:[/red]")
+        for key, value in diff["removed"].items():
+            console.print(f"  {key}: {value}")
+
+    if diff.get("changed"):
+        console.print("\n[yellow]Changed values:[/yellow]")
+        for key, change in diff["changed"].items():
+            if isinstance(change, dict) and "old_value" in change:
+                old_val = change["old_value"]
+                new_val = change["new_value"]
+                delta = change.get("delta")
+                pct = change.get("percent_change")
+
+                if delta is not None:
+                    delta_str = f" (delta: {delta:+.4f}"
+                    if pct is not None:
+                        delta_str += f", {pct:+.2f}%"
+                    delta_str += ")"
+                    console.print(f"  {key}: {old_val} -> {new_val}{delta_str}")
+                else:
+                    console.print(f"  {key}: {old_val} -> {new_val}")
+            else:
+                console.print(f"  {key}: {change}")
+
+    if diff.get("nested"):
+        console.print("\n[blue]Nested changes:[/blue]")
+        for key, nested in diff["nested"].items():
+            console.print(f"  {key}:")
+            if nested.get("changed"):
+                for k, change in nested["changed"].items():
+                    if isinstance(change, dict) and "old_value" in change:
+                        console.print(f"    {k}: {change['old_value']} -> {change['new_value']}")
+                    else:
+                        console.print(f"    {k}: {change}")
+
+    console.print("\n[yellow]Disclaimer:[/yellow] This is research-only diff analysis. No profitability is claimed.")
+
+
+@artifacts_app.command("history")
+def artifacts_history(
+    artifact_name: Annotated[
+        str,
+        typer.Argument(help="Name of the artifact."),
+    ],
+    artifact_dir: Annotated[
+        str,
+        typer.Option("--artifact-dir", help="Directory containing the artifact."),
+    ] = "data",
+) -> None:
+    """List available history versions for an artifact.
+
+    This command is research-only. It shows available versions of an artifact
+    for tracking. No live trading, no broker calls.
+    """
+    differ = ArtifactDiffer(artifact_dir)
+
+    if not differ.is_enabled:
+        console.print("[yellow]Artifact diffing is not enabled.[/yellow]")
+        console.print("Set AURORA_DIFF_ARTIFACTS=true to enable history tracking.")
+        raise typer.Exit(code=1)
+
+    history = differ.list_history(artifact_name)
+
+    if not history:
+        console.print(f"[yellow]No history found for artifact:[/yellow] {artifact_name}")
+        raise typer.Exit(code=1)
+
+    table = Table(title=f"Artifact History: {artifact_name}")
+    table.add_column("Version")
+    table.add_column("Timestamp")
+    table.add_column("Path")
+
+    for entry in history:
+        table.add_row(entry.get("version", ""), entry.get("timestamp", ""), entry.get("path", ""))
+
+    console.print(table)
+    console.print("\n[yellow]Disclaimer:[/yellow] This is research-only history. No profitability is claimed.")
+
+
+@config_app.command("init")
+def config_init(
+    path: Annotated[
+        str,
+        typer.Option("--path", "-p", help="Path to save the config file."),
+    ] = ".aurora.yml",
+) -> None:
+    """Create a default project configuration file.
+
+    This command creates an annotated YAML template with all available
+    configuration options. All secrets should use environment variable
+    placeholders like ${API_KEY}.
+
+    This command is research-only. No live trading, no broker calls.
+    """
+    write_default_config(path)
+    console.print(f"[green]Created default config:[/green] {path}")
+    console.print("\n[yellow]Note:[/yellow] Review and update values before using.")
+    console.print("[yellow]Disclaimer:[/yellow] This is a research-only config template. No profitability is claimed.")
+
+
+@config_app.command("validate")
+def config_validate(
+    path: Annotated[
+        str,
+        typer.Argument(help="Path to the config file to validate."),
+    ] = ".aurora.yml",
+) -> None:
+    """Validate a project configuration file.
+
+    This command checks the config file for:
+    - Valid YAML syntax
+    - Valid field names and types
+    - No suspicious secret values (API keys should use env vars)
+
+    This command is research-only. No live trading, no broker calls.
+    """
+    config_path = Path(path)
+
+    if not config_path.exists():
+        console.print(f"[red]Config file not found:[/red] {path}")
+        raise typer.Exit(code=1)
+
+    try:
+        loaded_config = ProjectConfig.from_yaml(path)
+        console.print(f"[green]Config file is valid:[/green] {path}")
+        console.print(f"  Project: {loaded_config.project.name}")
+        console.print(f"  Data source: {loaded_config.data.source}")
+        console.print(f"  Symbols: {loaded_config.data.symbols}")
+        console.print(f"  Initial capital: ${loaded_config.backtesting.initial_capital:,.2f}")
+        console.print("\n[yellow]Disclaimer:[/yellow] This is research-only config validation. No profitability is claimed.")
+    except ValueError as e:
+        console.print(f"[red]Config validation failed:[/red] {str(e)}")
+        raise typer.Exit(code=1)
+    except Exception as e:
+        console.print(f"[red]Error loading config:[/red] {str(e)}")
+        raise typer.Exit(code=1)
+
+
+@scheduler_app.command("run")
+def scheduler_run(
+    schedule: Annotated[
+        str,
+        typer.Option("--schedule", "-s", help="Path to schedule YAML file."),
+    ] = "schedule.yaml",
+) -> None:
+    """Start the scheduler loop and run tasks at their intervals.
+
+    This command runs indefinitely until interrupted (Ctrl+C).
+    It checks for due tasks and executes them in separate threads.
+
+    This command is research-only. No live trading, no broker calls.
+    """
+    try:
+        scheduler = TaskScheduler(schedule)
+        console.print(f"[green]Scheduler started with {len(scheduler.tasks)} task(s)[/green]")
+        console.print("[yellow]Press Ctrl+C to stop[/yellow]")
+        console.print("\n[yellow]Disclaimer:[/yellow] This is a research-only scheduler. No profitability is claimed.")
+
+        scheduler.run_forever(check_interval=10)
+
+    except FileNotFoundError:
+        console.print(f"[red]Schedule file not found:[/red] {schedule}")
+        raise typer.Exit(code=1)
+    except ValueError as e:
+        console.print(f"[red]Invalid schedule:[/red] {str(e)}")
+        raise typer.Exit(code=1)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Scheduler stopped[/yellow]")
+    except Exception as e:
+        console.print(f"[red]Scheduler error:[/red] {str(e)}")
+        raise typer.Exit(code=1)
+
+
+@scheduler_app.command("validate")
+def scheduler_validate(
+    schedule: Annotated[
+        str,
+        typer.Option("--schedule", "-s", help="Path to schedule YAML file."),
+    ] = "schedule.yaml",
+) -> None:
+    """Validate a schedule file without running it.
+
+    This command checks that:
+    - The YAML file is valid
+    - All commands are allowed
+    - All task definitions are complete
+
+    This command is research-only. No live trading, no broker calls.
+    """
+    is_valid, message = validate_schedule(schedule)
+
+    if is_valid:
+        console.print(f"[green]Valid schedule:[/green] {message}")
+    else:
+        console.print(f"[red]Invalid schedule:[/red] {message}")
+        raise typer.Exit(code=1)
+
+
+@scheduler_app.command("list")
+def scheduler_list(
+    schedule: Annotated[
+        str,
+        typer.Option("--schedule", "-s", help="Path to schedule YAML file."),
+    ] = "schedule.yaml",
+) -> None:
+    """List all tasks in a schedule file with their next run times.
+
+    This command is research-only. No live trading, no broker calls.
+    """
+    try:
+        scheduler = TaskScheduler(schedule)
+
+        table = Table(title="Scheduled Tasks")
+        table.add_column("Name")
+        table.add_column("Command")
+        table.add_column("Interval (min)")
+        table.add_column("Enabled")
+        table.add_column("Next Run")
+
+        for task_info in scheduler.list_tasks():
+            table.add_row(
+                task_info["name"],
+                task_info["command"],
+                str(task_info["interval_minutes"]),
+                "Yes" if task_info["enabled"] else "No",
+                task_info["next_run"] or "N/A",
+            )
+
+        console.print(table)
+        console.print("\n[yellow]Disclaimer:[/yellow] This is a research-only task list. No profitability is claimed.")
+
+    except FileNotFoundError:
+        console.print(f"[red]Schedule file not found:[/red] {schedule}")
+        raise typer.Exit(code=1)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        raise typer.Exit(code=1)
+
+
+@web_app.command("start")
+def web_start(
+    port: Annotated[
+        int,
+        typer.Option("--port", "-p", help="Port to run the web server on."),
+    ] = APP_PORT,
+    host: Annotated[
+        str,
+        typer.Option("--host", "-h", help="Host to bind to."),
+    ] = APP_HOST,
+) -> None:
+    """Start the AURORA web UI.
+
+    This launches a local Streamlit dashboard for research workflows.
+    The app binds to localhost only - no external access.
+
+    This command is research-only. No live trading, no broker calls.
+    """
+    import subprocess
+    import sys
+
+    app_path = Path(__file__).parent.parent / "web" / "app.py"
+
+    if not app_path.exists():
+        console.print("[red]Web app not found:[/red] {app_path}")
+        raise typer.Exit(code=1)
+
+    console.print(f"[green]Starting AURORA Web UI...[/green]")
+    console.print(f"  URL: http://{host}:{port}")
+    console.print(f"  App: {app_path}")
+    console.print("\n[yellow]Press Ctrl+C to stop[/yellow]")
+    console.print("\n[yellow]Disclaimer:[/yellow] This is a research-only web interface. No profitability is claimed.")
+
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "streamlit", "run", str(app_path), "--server.port", str(port), "--server.address", host],
+            check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]Failed to start web UI:[/red] {e}")
+        raise typer.Exit(code=1)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Web UI stopped[/yellow]")
+
+
+@plugins_app.command("list")
+def plugins_list(
+    plugin_dir: Annotated[
+        str,
+        typer.Option("--plugin-dir", help="Path to plugin directory."),
+    ] = DEFAULT_PLUGIN_DIR,
+) -> None:
+    """List all discovered plugins.
+
+    This command is research-only. No live trading, no broker calls.
+    """
+    registry = PluginRegistry(plugin_dir)
+
+    try:
+        plugins = registry.discover()
+    except Exception as e:
+        console.print(f"[red]Error discovering plugins:[/red] {str(e)}")
+        raise typer.Exit(code=1)
+
+    if not plugins:
+        console.print("[yellow]No plugins found.[/yellow]")
+        console.print(f"Plugin directory: {plugin_dir}")
+        console.print("Create a plugin directory with plugin implementations to extend AURORA.")
+        raise typer.Exit(0)
+
+    table = Table(title="Discovered Plugins")
+    table.add_column("Name")
+    table.add_column("Type")
+    table.add_column("Version")
+    table.add_column("Status")
+
+    for plugin in plugins:
+        if plugin.error:
+            status = f"[red]Error: {plugin.error}[/red]"
+        else:
+            status = "[green]OK[/green]"
+
+        table.add_row(
+            plugin.name,
+            plugin.plugin_type,
+            plugin.version or "N/A",
+            status,
+        )
+
+    console.print(table)
+    console.print(f"\n[yellow]Disclaimer:[/yellow] This is research-only plugin listing. No profitability claimed.")
+
+
+@plugins_app.command("validate")
+def plugins_validate(
+    plugin_dir: Annotated[
+        str,
+        typer.Option("--plugin-dir", help="Path to plugin directory."),
+    ] = DEFAULT_PLUGIN_DIR,
+) -> None:
+    """Validate all plugins in the plugin directory.
+
+    Checks that plugins:
+    - Implement required ABCs
+    - Don't contain hardcoded secrets
+    - Can be loaded without errors
+
+    This command is research-only. No live trading, no broker calls.
+    """
+    registry = PluginRegistry(plugin_dir)
+
+    try:
+        result = registry.validate_plugins()
+    except Exception as e:
+        console.print(f"[red]Error validating plugins:[/red] {str(e)}")
+        raise typer.Exit(code=1)
+
+    console.print(f"[cyan]Validation Results:[/cyan]")
+    console.print(f"  Total plugins: {result['total']}")
+    console.print(f"  Valid: {result['valid']}")
+
+    if result['errors']:
+        console.print("\n[red]Errors:[/red]")
+        for error in result['errors']:
+            console.print(f"  - {error['name']}: {error['error']}")
+        raise typer.Exit(code=1)
+
+    console.print("\n[green]All plugins validated successfully![/green]")
+    console.print("\n[yellow]Disclaimer:[/yellow] This is research-only validation. No profitability claimed.")
+
+
+@plugins_app.command("add")
+def plugins_add(
+    path: Annotated[
+        str,
+        typer.Option("--path", "-p", help="Path to plugin directory to add."),
+    ],
+    plugin_dir: Annotated[
+        str,
+        typer.Option("--plugin-dir", help="Target plugin directory."),
+    ] = DEFAULT_PLUGIN_DIR,
+) -> None:
+    """Add a plugin to the plugin directory.
+
+    This command creates a symlink or copies the plugin directory
+    to the user's plugin directory.
+
+    This command is research-only. No live trading, no broker calls.
+    """
+    source_path = Path(path).resolve()
+    target_dir = Path(plugin_dir).resolve()
+
+    if not source_path.exists():
+        console.print(f"[red]Source path does not exist:[/red] {path}")
+        raise typer.Exit(code=1)
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    target_path = target_dir / source_path.name
+
+    if target_path.exists():
+        console.print(f"[yellow]Plugin already exists:[/yellow] {target_path}")
+        console.print("Use --overwrite or remove the existing plugin first.")
+        raise typer.Exit(code=1)
+
+    try:
+        if source_path.is_dir():
+            import shutil
+            shutil.copytree(source_path, target_path)
+        else:
+            import shutil
+            shutil.copy2(source_path, target_path)
+
+        console.print(f"[green]Plugin added:[/green] {target_path}")
+        console.print("\n[yellow]Note:[/yellow] Run 'aurora plugins validate' to verify the plugin.")
+
+    except Exception as e:
+        console.print(f"[red]Error adding plugin:[/red] {str(e)}")
+        raise typer.Exit(code=1)
+
+
+@security_app.command("sandbox")
+def security_sandbox() -> None:
+    """Sandbox subcommands (validate, status).
+
+    Use 'aurora security sandbox validate' or 'aurora security sandbox status'.
+    """
+    console.print("[yellow]Use specific subcommand:[/yellow]")
+    console.print("  aurora security sandbox validate --strategy-file <path>")
+    console.print("  aurora security sandbox status")
+
+
+@security_app.command("sandbox-validate")
+def security_sandbox_validate(
+    strategy_file: Annotated[
+        str,
+        typer.Option("--strategy-file", "-f", help="Path to strategy Python file."),
+    ],
+) -> None:
+    """Validate a strategy file against sandbox rules.
+
+    This command parses the strategy file and checks for dangerous
+    operations like disallowed imports, file writes, etc.
+
+    This command is research-only. No live trading, no broker calls.
+    """
+    strategy_path = Path(strategy_file)
+
+    if not strategy_path.exists():
+        console.print(f"[red]Strategy file not found:[/red] {strategy_file}")
+        raise typer.Exit(code=1)
+
+    try:
+        source_code = strategy_path.read_text(encoding="utf-8")
+    except Exception as e:
+        console.print(f"[red]Error reading file:[/red] {str(e)}")
+        raise typer.Exit(code=1)
+
+    validator = SandboxValidator()
+
+    try:
+        validator.validate_source(source_code)
+        console.print(f"[green]Strategy file is safe:[/green] {strategy_file}")
+        console.print("\n[yellow]Disclaimer:[/yellow] This is research-only validation. No profitability claimed.")
+    except SandboxViolationError as e:
+        console.print(f"[red]Sandbox violation:[/red] {str(e)}")
+        raise typer.Exit(code=1)
+
+
+@security_app.command("sandbox-status")
+def security_sandbox_status() -> None:
+    """Show sandbox status (enabled/disabled).
+
+    This command is research-only. No live trading, no broker calls.
+    """
+    enabled = is_sandbox_enabled()
+
+    if enabled:
+        console.print("[green]Sandbox:[/green] ENABLED")
+        console.print("Strategy execution will be validated against sandbox rules.")
+    else:
+        console.print("[yellow]Sandbox:[/yellow] DISABLED")
+        console.print("Set AURORA_SANDDBOX=true to enable sandbox mode.")
+
+    console.print("\n[yellow]Disclaimer:[/yellow] This is research-only security. No profitability claimed.")
+
+
+@deployment_app.command("checklist")
+def deploy_checklist(
+    export_bundle: Annotated[
+        str | None,
+        typer.Option("--export-bundle", help="Path to export bundle ZIP file."),
+    ] = None,
+    readiness_report: Annotated[
+        str | None,
+        typer.Option("--readiness-report", help="Path to readiness report JSON."),
+    ] = None,
+    checklist_definition: Annotated[
+        str | None,
+        typer.Option("--checklist-definition", help="Path to custom checklist YAML."),
+    ] = None,
+    output: Annotated[
+        str | None,
+        typer.Option("--output", "-o", help="Path to save checklist report JSON."),
+    ] = None,
+    answers: Annotated[
+        str | None,
+        typer.Option("--answers", help="JSON string with pre-answered boolean values."),
+    ] = None,
+) -> None:
+    """Run deployment readiness checklist.
+
+    This command verifies safety gates, disclosure requirements, and
+    export integrity before a strategy can be considered for deployment.
+
+    This command is research-only. It is advisory only and does not
+    grant permission to trade live. The user bears all responsibility.
+    """
+    console.print("[cyan]AURORA Deployment Readiness Checklist[/cyan]")
+    console.print("")
+    console.print(f"[yellow]Mandatory Disclaimer:[/yellow] {MANDATORY_DISCLAIMER}")
+    console.print("")
+
+    try:
+        checklist = DeploymentChecklist(checklist_definition)
+
+        strategy_metrics = {}
+        if readiness_report and os.path.exists(readiness_report):
+            with open(readiness_report) as f:
+                report = json.load(f)
+                if "backtest_summary" in report:
+                    strategy_metrics = report["backtest_summary"]
+
+        parsed_answers = {}
+        if answers:
+            parsed_answers = json.loads(answers)
+
+        results = checklist.run(
+            export_bundle_path=export_bundle,
+            readiness_report_path=readiness_report,
+            strategy_metrics=strategy_metrics,
+            answers=parsed_answers,
+        )
+
+        passed_count = sum(1 for r in results if r.passed)
+        failed_count = sum(1 for r in results if not r.passed)
+
+        table = Table(title="Checklist Results")
+        table.add_column("ID")
+        table.add_column("Status")
+        table.add_column("Details")
+
+        for result in results:
+            status = "[green]PASS[/green]" if result.passed else "[red]FAIL[/red]"
+            table.add_row(result.item_id, status, result.details)
+
+        console.print(table)
+        console.print(f"\n[cyan]Summary:[/cyan] {passed_count} passed, {failed_count} failed")
+
+        if output:
+            checklist.generate_report(results, output)
+            console.print(f"\n[green]Report saved to:[/green] {output}")
+
+        if checklist.is_ready(results):
+            console.print("\n[green]All checks passed![/green]")
+            console.print("Your strategy has satisfied AURORA's research-gated deployment checklist.")
+            console.print("Remember: past performance does not guarantee future results.")
+            console.print("You are responsible for all trading decisions.")
+        else:
+            console.print("\n[yellow]Some checks failed.[/yellow]")
+            console.print("Please review the failures and address them before deployment.")
+            raise typer.Exit(code=1)
+
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        raise typer.Exit(code=1)
+
+
+@deployment_app.command("init-checklist")
+def deploy_init_checklist(
+    path: Annotated[
+        str,
+        typer.Option("--path", "-p", help="Path to save the checklist template."),
+    ] = "deployment_checklist.yaml",
+) -> None:
+    """Create a default deployment checklist template.
+
+    This command is research-only.
+    """
+    from aurora.deployment.checklist import create_default_checklist_file
+
+    create_default_checklist_file(path)
+    console.print(f"[green]Created default checklist:[/green] {path}")
 
 
 if __name__ == "__main__":

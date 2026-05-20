@@ -249,10 +249,28 @@ def run_portfolio_backtest(
     )
 
 
-def save_portfolio_result(result: PortfolioBacktestResult, output_path: str) -> Path:
-    """Save portfolio backtest result to JSON."""
+def save_portfolio_result(
+    result: PortfolioBacktestResult,
+    output_path: str,
+    artifact_differ: Any = None,
+) -> Path:
+    """Save portfolio backtest result to JSON.
+
+    Args:
+        result: Portfolio backtest result.
+        output_path: Path to save the JSON file.
+        artifact_differ: Optional ArtifactDiffer for archiving previous version.
+
+    Returns:
+        Path to the saved file.
+    """
     output_file = Path(output_path)
     output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    artifact_name = output_file.stem
+
+    if artifact_differ is not None and artifact_differ.is_enabled:
+        artifact_differ.save_run_artifact(artifact_name, result.to_dict())
 
     with output_file.open("w", encoding="utf-8") as f:
         json.dump(result.to_dict(), f, indent=2, sort_keys=False)

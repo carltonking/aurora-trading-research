@@ -5,6 +5,7 @@ It never trades, never calls brokers, and never claims profitability.
 """
 
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -328,12 +329,18 @@ class AdaptiveOptimizer:
 
         return changes
 
-    def write_proposal(self, proposal: OptimizationProposal, output_dir: str) -> Path:
+    def write_proposal(
+        self,
+        proposal: OptimizationProposal,
+        output_dir: str,
+        artifact_differ: Any = None,
+    ) -> Path:
         """Write optimization proposal to JSON file.
 
         Args:
             proposal: The optimization proposal to write.
             output_dir: Directory to write the proposal.
+            artifact_differ: Optional ArtifactDiffer for archiving previous version.
 
         Returns:
             Path to the written file.
@@ -342,6 +349,10 @@ class AdaptiveOptimizer:
         output_path.mkdir(parents=True, exist_ok=True)
 
         file_path = output_path / "optimization_proposal.json"
+
+        if artifact_differ is not None and artifact_differ.is_enabled:
+            artifact_differ.save_run_artifact("optimization_proposal", proposal.to_dict())
+
         with file_path.open("w", encoding="utf-8") as f:
             json.dump(proposal.to_dict(), f, indent=2, sort_keys=True)
 

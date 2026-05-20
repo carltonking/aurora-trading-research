@@ -25,7 +25,9 @@ from aurora.risk.models import (
     TradeCandidate,
 )
 from aurora.risk.portfolio_risk import PortfolioRiskConfig
+from aurora.risk.position_sizing import PositionSizer, FixedFractionSizer
 from aurora.risk.risk_manager import RiskManager
+from aurora.risk.kill_switch import KillSwitch, KillSwitchConfig, KillSwitchMetrics
 
 
 @dataclass
@@ -95,6 +97,8 @@ class PaperExecutor:
         portfolio: PortfolioState | None = None,
         stream: Optional[MarketDataStream] = None,
         portfolio_risk_config: PortfolioRiskConfig | None = None,
+        position_sizer: PositionSizer | None = None,
+        kill_switch: KillSwitch | None = None,
     ) -> None:
         self.risk_manager = risk_manager
         self.broker_client = broker_client
@@ -107,9 +111,14 @@ class PaperExecutor:
         self._stream = stream
         self._stream_prices: dict[str, float] = {}
         self._portfolio_risk_config = portfolio_risk_config
+        self._position_sizer = position_sizer or FixedFractionSizer()
+        self._kill_switch = kill_switch
+        self._peak_equity = self.portfolio.equity
+        self._consecutive_losses = 0
+        self._last_trade_profit: Optional[float] = None
 
     def execute(self, request: PaperExecutionRequest) -> PaperExecutionResult:
-        """Execute a paper order, gating through RiskManager.
+        """Execute a paper order, gating through RiskManager and kill-switch.
 
         Args:
             request: Paper execution request.
@@ -117,6 +126,43 @@ class PaperExecutor:
         Returns:
             PaperExecutionResult with risk decision and broker response.
         """
+        if self._kill_switch is not None and self._kill_switch.is_active():
+            candidate = self._to_trade_candidate(request)
+            return PaperExecutionResult(
+                request=request,
+                risk_decision=RiskDecision(
+                    status=RISK_KILL_SWITCH_TRIGGERED,
+                    approved=False,
+                    original_quantity=float(request.quantity),
+                    final_quantity=0.0,
+                    reasons=[self._kill_switch.trigger_reason or "kill_switch_active"],
+                    candidate=candidate,
+                ),
+                broker_response=None,
+                reason=f"Kill-switch active: {self._kill_switch.trigger_reason}",
+            )
+
+        if request.quantity == 0 and request.side == "buy":
+            price = request.price if request.price > 0 else self._stream_prices.get(request.symbol, 100.0)
+            calculated_qty = self._position_sizer.calculate(
+                portfolio_value=self.portfolio.equity,
+                price=price,
+                strategy_edge=0.01,
+                volatility=0.02,
+            )
+            if calculated_qty > 0:
+                request = PaperExecutionRequest(
+                    candidate_id=request.candidate_id,
+                    strategy_name=request.strategy_name,
+                    symbol=request.symbol,
+                    quantity=calculated_qty,
+                    side=request.side,
+                    order_type=request.order_type,
+                    price=request.price,
+                    signal_metadata=request.signal_metadata,
+                    timestamp=request.timestamp,
+                )
+
         candidate = self._to_trade_candidate(request)
         decision = self.risk_manager.evaluate(candidate, self.portfolio)
         self.ledger.record_risk_decision(decision)
@@ -188,7 +234,45 @@ class PaperExecutor:
             )
 
         self._record_execution(result)
+        self._evaluate_kill_switch()
         return result
+
+    def _evaluate_kill_switch(self) -> None:
+        """Evaluate kill-switch conditions after each trade."""
+        if self._kill_switch is None:
+            return
+
+        if self.portfolio.equity > self._peak_equity:
+            self._peak_equity = self.portfolio.equity
+
+        drawdown = 0.0
+        if self._peak_equity > 0:
+            drawdown = (self._peak_equity - self.portfolio.equity) / self._peak_equity
+
+        metrics = KillSwitchMetrics(
+            drawdown=drawdown,
+            daily_loss=0.0,
+            rolling_sharpe=0.0,
+            consecutive_losses=self._consecutive_losses,
+            peak_equity=self._peak_equity,
+            current_equity=self.portfolio.equity,
+        )
+
+        if self._kill_switch.evaluate(metrics):
+            self._kill_switch.activate(self._kill_switch.trigger_reason)
+
+    def update_trade_result(self, profit: Optional[float]) -> None:
+        """Update consecutive losses counter after a trade settles.
+
+        Args:
+            profit: Profit from the trade (positive = win, negative = loss, None = pending).
+        """
+        if profit is not None:
+            if profit < 0:
+                self._consecutive_losses += 1
+            else:
+                self._consecutive_losses = 0
+            self._last_trade_profit = profit
 
     def _get_latest_price(self, symbol: str) -> Optional[float]:
         """Get latest price from stream or return None.
