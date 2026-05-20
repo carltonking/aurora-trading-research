@@ -2674,6 +2674,136 @@ def optimize_run(
     console.print("\n[yellow]Note:[/yellow] This is research-only. No profitability is claimed.")
 
 
+@optimize_app.command("walk-forward")
+def optimize_walk_forward(
+    symbol: Annotated[
+        str,
+        typer.Option("--symbol", help="Stock symbol to optimize."),
+    ],
+    param_space_path: Annotated[
+        str,
+        typer.Option("--param-space", help="Path to JSON param space definition."),
+    ] = "config/param_space.json",
+    start: Annotated[
+        str,
+        typer.Option("--start", help="Start date (YYYY-MM-DD)."),
+    ] = "2020-01-01",
+    end: Annotated[
+        str,
+        typer.Option("--end", help="End date (YYYY-MM-DD)."),
+    ] = "2024-01-01",
+    method: Annotated[
+        str,
+        typer.Option("--method", help="Inner optimizer: genetic or bayesian."),
+    ] = "genetic",
+    train_ratio: Annotated[
+        float,
+        typer.Option("--train-ratio", help="Train/test split ratio."),
+    ] = 0.6,
+    anchor: Annotated[
+        bool,
+        typer.Option("--anchor", help="Use anchored expanding window."),
+    ] = True,
+    purge: Annotated[
+        int,
+        typer.Option("--purge", help="Purge days between train and test."),
+    ] = 5,
+    embargo: Annotated[
+        int,
+        typer.Option("--embargo", help="Embargo days for expanding window."),
+    ] = 2,
+    freq: Annotated[
+        str,
+        typer.Option("--freq", help="Reoptimization frequency: monthly or quarterly."),
+    ] = "monthly",
+    output_path: Annotated[
+        str,
+        typer.Option("--output", help="Output path for results."),
+    ] = "data/optimization/walk_forward_results.json",
+) -> None:
+    """Run walk-forward optimization for true out-of-sample testing.
+
+    This command is research-only. It splits data into train/test windows,
+    optimizes on train, tests on out-of-sample test data. No live trading,
+    no broker calls, no profitability claims.
+    """
+    import json
+    import pandas as pd
+
+    from aurora.optimization.walk_forward_optimizer import (
+        WalkForwardOptimizer,
+        WalkForwardOptimizerConfig,
+    )
+
+    console.print(f"[cyan]Running walk-forward optimization for {symbol}[/cyan]")
+
+    try:
+        with open(param_space_path) as f:
+            param_space = json.load(f)
+    except FileNotFoundError:
+        console.print(f"[red]Error:[/red] Param space file not found: {param_space_path}")
+        raise typer.Exit(1)
+
+    config = WalkForwardOptimizerConfig(
+        strategy_archetype="trend_following",
+        param_space=param_space,
+        train_ratio=train_ratio,
+        anchor=anchor,
+        purge_days=purge,
+        embargo_days=embargo,
+        reoptimize_freq=freq,
+        metric="sharpe_ratio",
+        inner_optimizer=method,
+    )
+
+    def strategy_builder(params):
+        from aurora.strategies.archetypes import TrendFollowingStrategy
+        return TrendFollowingStrategy(
+            fast_window=params.get("fast_window", 10),
+            slow_window=params.get("slow_window", 30),
+        )
+
+    def data_fetcher(sym, start_date, end_date):
+        dates = pd.date_range(start=start_date, end=end_date, freq="D")
+        return pd.DataFrame({
+            "close": 100 + pd.Series(range(len(dates))) * 0.5,
+            "open": 99 + pd.Series(range(len(dates))) * 0.5,
+            "high": 102 + pd.Series(range(len(dates))) * 0.5,
+            "low": 98 + pd.Series(range(len(dates))) * 0.5,
+            "volume": 1000000,
+        }, index=dates)
+
+    optimizer = WalkForwardOptimizer(
+        config=config,
+        strategy_builder=strategy_builder,
+        data_fetcher=data_fetcher,
+    )
+
+    result = optimizer.run(symbol, start, end)
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w") as f:
+        json.dump(result.to_dict(), f, indent=2)
+
+    console.print(f"\n[green]Walk-forward optimization complete![/green]")
+    console.print(f"\n=== Overall Out-of-Sample Metrics ===")
+    console.print(f"Sharpe Ratio: {result.overall_oos_metrics.get('sharpe_ratio', 0):.4f}")
+    console.print(f"Total Return: {result.overall_oos_metrics.get('total_return', 0):.2%}")
+    console.print(f"Total Trades: {result.overall_oos_metrics.get('total_trades', 0)}")
+    console.print(f"Windows: {result.overall_oos_metrics.get('n_windows', 0)}")
+
+    console.print(f"\n=== Per-Window Results ===")
+    for i, w in enumerate(result.windows):
+        console.print(f"Window {i+1}: Train {w.train_start}-{w.train_end}, "
+                     f"Test {w.test_start}-{w.test_end}")
+        console.print(f"  Best params: {w.best_params}")
+        console.print(f"  Train metric: {w.train_metric:.4f}, OOS metric: {w.oos_metric:.4f}")
+
+    console.print(f"\nResults saved to: {output_path}")
+    console.print("\n[yellow]Note:[/yellow] This is research-only. No profitability is claimed.")
+
+
 @export_app.command("strategy")
 def export_strategy(
     strategy: Annotated[
