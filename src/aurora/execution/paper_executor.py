@@ -10,9 +10,10 @@ import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from aurora.brokers.alpaca_adapter import AlpacaPaperBrokerProtocol
+from aurora.data.streaming.base import MarketDataStream
 from aurora.execution.ledger import PaperLedger
 from aurora.risk.models import (
     RISK_APPROVED,
@@ -91,6 +92,7 @@ class PaperExecutor:
         broker_client: AlpacaPaperBrokerProtocol,
         ledger: PaperLedger | None = None,
         portfolio: PortfolioState | None = None,
+        stream: Optional[MarketDataStream] = None,
     ) -> None:
         self.risk_manager = risk_manager
         self.broker_client = broker_client
@@ -100,6 +102,8 @@ class PaperExecutor:
             cash=100000.0,
             market_value=0.0,
         )
+        self._stream = stream
+        self._stream_prices: dict[str, float] = {}
 
     def execute(self, request: PaperExecutionRequest) -> PaperExecutionResult:
         """Execute a paper order, gating through RiskManager.
@@ -160,6 +164,26 @@ class PaperExecutor:
 
         self._record_execution(result)
         return result
+
+    def _get_latest_price(self, symbol: str) -> Optional[float]:
+        """Get latest price from stream or return None.
+
+        Args:
+            symbol: Stock symbol to get price for.
+
+        Returns:
+            Latest close price from stream, or None if stream not available.
+        """
+        return self._stream_prices.get(symbol)
+
+    def set_stream_price(self, symbol: str, price: float) -> None:
+        """Update the latest price from stream for a symbol.
+
+        Args:
+            symbol: Stock symbol
+            price: Latest close price
+        """
+        self._stream_prices[symbol] = price
 
     def _to_trade_candidate(self, request: PaperExecutionRequest) -> TradeCandidate:
         """Convert paper execution request to trade candidate."""

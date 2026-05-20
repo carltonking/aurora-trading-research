@@ -2302,6 +2302,125 @@ def paper_performance(
     console.print("\n[yellow]Disclaimer:[/yellow] Past paper performance does not guarantee future results.")
 
 
+@paper_app.command("stream")
+def paper_stream(
+    symbols: Annotated[
+        str,
+        typer.Option("--symbols", help="Comma-separated stock symbols (e.g., AAPL,MSFT)."),
+    ],
+    duration: Annotated[
+        int,
+        typer.Option("--duration", help="Duration in seconds for fake stream replay."),
+    ] = 60,
+    live: Annotated[
+        bool,
+        typer.Option("--live", help="Use real Alpaca paper WebSocket (requires credentials)."),
+    ] = False,
+    interval: Annotated[
+        str,
+        typer.Option("--interval", help="Data interval for historical replay."),
+    ] = "5m",
+    delay: Annotated[
+        float,
+        typer.Option("--delay", help="Delay in seconds between bars for fake stream."),
+    ] = 1.0,
+) -> None:
+    """Stream real-time market data for paper trading.
+
+    This command demonstrates streaming market data. It can replay historical
+    data (fake stream) or connect to Alpaca's paper WebSocket (live).
+
+    NOTE: This command does NOT place orders. It only prints bar/quote updates
+    for verification purposes. No live trading, no real money.
+
+    Examples:
+        # Replay last 5 minutes of historical data for AAPL (fake stream):
+        aurora paper stream --symbols AAPL --duration 60
+
+        # Use real Alpaca paper WebSocket:
+        aurora paper stream --symbols AAPL,MSFT --live
+    """
+    from aurora.data.streaming import (
+        AlpacaPaperStream,
+        FakeMarketDataStream,
+    )
+    import pandas as pd
+
+    console.print("[cyan]Market Data Stream[/cyan]")
+
+    if live:
+        console.print("[yellow]Attempting Alpaca paper WebSocket connection...[/yellow]")
+        try:
+            stream = AlpacaPaperStream()
+            stream.connect()
+            stream.subscribe(symbols.split(","))
+
+            def print_bar(bar):
+                console.print(
+                    f"  {bar.timestamp} | {bar.symbol} | "
+                    f"O:{bar.open:.2f} H:{bar.high:.2f} L:{bar.low:.2f} "
+                    f"C:{bar.close:.2f} V:{bar.volume}"
+                )
+
+            stream.on_bar(print_bar)
+
+            import time
+            console.print(f"Streaming {symbols} (Ctrl+C to stop)...")
+            while True:
+                time.sleep(1)
+
+        except Exception as e:
+            console.print(f"[red]Error:[/red] {e}")
+            raise typer.Exit(1)
+
+    else:
+        console.print(f"[yellow]Using fake stream with {delay}s delay per bar...[/yellow]")
+
+        freq_map = {
+            "1m": "min", "5m": "5min", "15m": "15min", "30m": "30min",
+            "1h": "h", "1d": "D", "1wk": "W", "1mo": "ME",
+        }
+        freq = freq_map.get(interval, "D")
+
+        dates = pd.date_range(end=pd.Timestamp.now(), periods=100, freq=freq)
+        data = pd.DataFrame({
+            "symbol": [symbols.split(",")[0]] * 100,
+            "timestamp": dates,
+            "open": 100 + pd.Series(range(100)).astype(float) * 0.1,
+            "high": 102 + pd.Series(range(100)).astype(float) * 0.1,
+            "low": 98 + pd.Series(range(100)).astype(float) * 0.1,
+            "close": 100 + pd.Series(range(100)).astype(float) * 0.1,
+            "volume": 10000,
+        })
+
+        stream = FakeMarketDataStream(data, delay_seconds=delay)
+        stream.connect()
+        stream.subscribe(symbols.split(","))
+
+        console.print(f"Replaying {len(data)} bars for {duration}s...")
+
+        bar_count = 0
+
+        def on_bar(bar):
+            nonlocal bar_count
+            bar_count += 1
+            console.print(
+                f"  {bar.timestamp} | {bar.symbol} | "
+                f"O:{bar.open:.2f} H:{bar.high:.2f} L:{bar.low:.2f} "
+                f"C:{bar.close:.2f} V:{bar.volume}"
+            )
+
+        stream.on_bar(on_bar)
+        stream.start_replay()
+
+        import time
+        time.sleep(min(duration, len(data) * delay + 1))
+
+        stream.disconnect()
+        console.print(f"\n[green]Replayed {bar_count} bars.[/green]")
+        console.print("[yellow]Note: Stream command does not place orders.[/yellow]")
+
+
 @optimize_app.command("analyze")
 def optimize_analyze(
     strategy: Annotated[
