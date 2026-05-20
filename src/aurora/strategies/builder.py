@@ -25,7 +25,14 @@ class StrategyBuilder:
     strategies from archetype templates. No live trading, no broker calls.
     """
 
-    VALID_ARCHETYPES = {"trend_following", "mean_reversion", "breakout"}
+    VALID_ARCHETYPES = {
+        "trend_following",
+        "mean_reversion",
+        "breakout",
+        "grid_trading",
+        "pairs_trading",
+        "dca",
+    }
 
     def __init__(self, config_path: str | Path | None = None):
         """Initialize builder with optional config path.
