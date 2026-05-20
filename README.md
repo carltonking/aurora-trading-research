@@ -1,4 +1,6 @@
-# AURORA Trading Research — v2.2.1
+# AURORA — Autonomous Universe-Aware Research Optimization & Risk-managed Algorithm
+
+AURORA Trading Research — v3.0.0
 
 Most backtests are broken. Not in the sense that they use wrong data or bad assumptions — though that happens too — but in a more fundamental way: the methodology used to produce them systematically overstates performance, hides overfitting, and produces numbers that look precise while telling you almost nothing about what will happen next. Every open-source backtesting framework in common use has this problem. AURORA is a Python framework built around that reality.
 
