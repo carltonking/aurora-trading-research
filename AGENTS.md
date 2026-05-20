@@ -43,12 +43,12 @@ Run before completion:
 
 python3 -m pytest
 
-PYTHONPATH=src python3 -m aurora.cli.app demo run --output-root data/demo --latest-test-count 356
+PYTHONPATH=src python3 -m aurora.cli.app demo run --output-root data/demo --latest-test-count 768
 
 PYTHONPATH=src python3 -m aurora.cli.app reports safety-audit --no-fail-on-critical
 
-Expected current test count: 395 passed.
-Expected safety audit status: WARN, unless intentionally improved with matching tests and docs.
+Expected current test count: 768 passed.
+Expected safety audit status: WARN (37 warnings, 8 critical), unless intentionally improved with matching tests and docs.
 
 ## Implementation Rules
 
@@ -81,6 +81,23 @@ For adaptive strategy optimization:
 - It must not directly trade.
 - It must write artifacts explaining proposed changes, validation results, and review status.
 - It must not claim guaranteed profitability.
+
+For sandbox (strategy security):
+- Sandbox must be enabled via AURORA_SANDBOX=true environment variable.
+- External/community strategies must be validated via AST scanning before execution.
+- Reject code with disallowed imports (os, sys, subprocess, socket, requests, threading, etc.).
+- Reject dangerous builtins (exec, eval, compile, open for write).
+
+For plugins:
+- All plugins must pass secret detection (reject hardcoded API keys, tokens).
+- Plugin registry must validate plugins implement required ABCs.
+- Plugins are loaded only on-demand, never auto-executed.
+- Paper-only broker plugins must enforce paper trading.
+
+For deployment checklist:
+- Checklist is advisory only - never grants permission to trade live.
+- Always include mandatory disclaimer in reports.
+- User bears full responsibility for trading decisions.
 
 ## Git Hygiene
 

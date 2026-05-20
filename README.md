@@ -45,6 +45,61 @@ AURORA v2 remains local-first and paper-trading-first. The current v2 feature se
 - Paper broker integration safety design document.
 - Disabled broker adapter interface/stub scaffolding.
 
+## What's New in v2.2.0
+
+AURORA v2.2.0 adds 27 new features across research, paper trading, strategy development, risk, reporting, and infrastructure:
+
+### Research & Validation
+- **Monte Carlo simulation**: Robustness testing via resampled paths
+- **Stress testing**: Built-in scenarios (2008 crash, 2020 covid, rate shock)
+- **Sensitivity analysis**: Parameter robustness evaluation
+- **Walk-forward enhancements**: Improved validation methodology
+- **Multi-asset/universe support**: Portfolio-level backtesting
+- **Intraday data**: Sub-daily interval support
+
+### Paper Trading Realism
+- **Real-time streaming**: Live paper data feed
+- **Slippage/commission models**: Realistic fill simulation
+- **Order queue & latency**: Execution timing models
+- **Paper trading dashboard**: Visual monitoring
+
+### Strategy Development
+- **Grid archetype**: Grid-based trading strategy
+- **Pairs archetype**: Pairs trading strategy
+- **DCA archetype**: Dollar-cost averaging strategy
+- **Ensemble strategies**: Multi-strategy combining
+- **Genetic optimizer**: Evolutionary parameter search
+- **Bayesian optimizer**: Probabilistic optimization
+- **Walk-forward optimizer**: Time-series validation optimizer
+
+### Risk & Portfolio
+- **Portfolio RiskManager**: Multi-position risk controls
+- **Dynamic position sizing**: Kelly, fixed fraction, volatility-adjusted
+- **Kill-switch triggers**: Emergency shutdown conditions
+
+### Reporting
+- **Equity curve plotting**: Visual performance charts
+- **PDF readiness report**: Exportable documentation
+- **Diffable artifacts**: Version tracking for results
+
+### Infrastructure
+- **Persistent config files**: `.aurora.yml` project configuration
+- **Task scheduler**: Periodic research automation
+- **Local web UI**: Streamlit dashboard
+- **Alternative data sources**: FRED, SEC EDGAR, News API
+- **Plugin system**: Extensible architecture
+- **Strategy sandbox**: AST-based code validation
+- **Deployment checklist**: Advisory readiness verification
+
+### Safety Boundaries (Updated)
+- Sandbox validates external strategy code via AST scanning
+- Plugin secret detection rejects hardcoded API keys
+- Deployment checklist is advisory only - never grants live trading permission
+- Kill-switch triggers add runtime safety gates
+
+- Latest verified test result: `768 passed`
+- Safety audit status: `WARN (37 warnings, 8 critical)`
+
 ## What's New in v2.1.0
 
 AURORA v2.1.0 adds four new phase modules while maintaining all existing safety boundaries:

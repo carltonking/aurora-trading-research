@@ -4,6 +4,57 @@ All notable changes to AURORA Trading Research will be documented in this file.
 
 ## Unreleased
 
+## v2.2.0-rc1 - 2026-05-20
+
+### Added
+
+**Research & Validation:**
+- Monte Carlo simulation for backtest robustness
+- Stress testing with built-in scenarios (2008 crash, 2020 covid, rate shock)
+- Sensitivity analysis for parameter robustness
+- Walk-forward validation enhancements
+- Multi-asset/universe support
+- Intraday data support
+
+**Paper Trading Realism:**
+- Real-time streaming for paper trading
+- Slippage/commission models
+- Order queue and latency simulation
+- Paper trading dashboard
+
+**Strategy Development:**
+- Grid, Pairs, DCA archetypes
+- Ensemble strategies
+- Advanced optimizers (genetic, Bayesian)
+- Walk-forward optimizer
+
+**Risk & Portfolio:**
+- Portfolio RiskManager
+- Dynamic position sizing
+- Kill-switch triggers
+
+**Reporting:**
+- Equity curve plotting
+- PDF readiness report
+- Diffable artifacts
+
+**Infrastructure:**
+- Persistent config files (.aurora.yml)
+- Task scheduler
+- Local web UI (Streamlit)
+- Alternative data sources (FRED, SEC, News)
+- Plugin system
+- Strategy sandbox
+- Deployment readiness checklist
+
+### Safety
+
+- Sandbox validates strategy code via AST scanning for dangerous imports/calls
+- Plugin secret detection rejects API keys/tokens in plugin files
+- Deployment checklist is advisory only, never grants live trading permission
+- Kill-switch triggers add runtime safety gates
+- All modules follow existing safety boundaries: no live trading, no real broker execution
+
 ## v2.1.0-rc1 - 2026-05-19
 
 ### Added
