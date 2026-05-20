@@ -73,6 +73,9 @@ def render_sidebar() -> Optional[str]:
         "Paper Trading Monitor",
         "Readiness Report",
         "Optimizer",
+        "Export",
+        "Scheduler",
+        "Deployment Checklist",
     ]
 
     selected = st.sidebar.radio("Navigation", pages)
@@ -371,6 +374,266 @@ def render_optimizer() -> None:
     show_disclaimer()
 
 
+def render_export() -> None:
+    """Render Export page."""
+    st.title(":package: Export")
+
+    col1, col2 = st.columns([1, 2])
+
+    with col1:
+        st.subheader("Export Configuration")
+
+        strategy_name = st.text_input("Strategy Name", value="demo_momentum_strategy")
+        output_path = st.text_input("Output Path", value="export/strategy_bundle.zip")
+        artifact_dir = st.text_input(
+            "Artifact Directory (optional)",
+            value="data/demo/research_runs/latest",
+        )
+
+    with col2:
+        st.subheader("Actions")
+
+        if st.button("Generate Export Bundle", type="primary"):
+            st.markdown("---")
+            st.markdown("**:warning: Research Only Disclaimer:** This export tool is for research and paper-trading purposes only. No live trading, no broker execution.")
+            st.markdown("---")
+
+            with st.spinner("Generating export bundle..."):
+                try:
+                    from aurora.export.strategy_exporter import StrategyExporter
+
+                    exporter = StrategyExporter(
+                        strategy_name=strategy_name,
+                        artifact_directory=artifact_dir,
+                        output_zip_path=output_path,
+                    )
+
+                    bundle = exporter.create_bundle()
+
+                    st.success(f"Export bundle created: {output_path}")
+
+                    st.markdown("### Bundle Manifest")
+                    for f in bundle.files:
+                        st.markdown(f"- {f}")
+
+                    with open(output_path, "rb") as f:
+                        st.download_button(
+                            label="Download Bundle",
+                            data=f,
+                            file_name=output_path.split("/")[-1],
+                            mime="application/zip",
+                        )
+
+                except Exception as e:
+                    st.error(f"Export failed: {e}")
+
+    show_disclaimer()
+
+
+def render_scheduler() -> None:
+    """Render Scheduler page."""
+    st.title(":calendar: Scheduler")
+
+    if "scheduler_state" not in st.session_state:
+        st.session_state.scheduler_state = {
+            "running": False,
+            "log_messages": [],
+            "tasks": [],
+        }
+
+    col1, col2 = st.columns([1, 2])
+
+    with col1:
+        st.subheader("Schedule Configuration")
+
+        default_yaml = """tasks:
+  - name: daily_research
+    command: research run
+    interval: 60
+    enabled: true
+    start_time: "09:00"
+
+  - name: weekly_backtest
+    command: backtest run --symbols SPY
+    interval: 10080
+    enabled: false
+"""
+        schedule_yaml = st.text_area(
+            "Schedule YAML",
+            value=default_yaml,
+            height=300,
+        )
+
+        if st.button("Validate Schedule", type="secondary"):
+            try:
+                import tempfile
+                import yaml
+
+                with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+                    f.write(schedule_yaml)
+                    temp_path = f.name
+
+                from aurora.scheduling.scheduler import validate_schedule
+
+                is_valid, message = validate_schedule(temp_path)
+                if is_valid:
+                    st.success(message)
+                else:
+                    st.error(f"Validation failed: {message}")
+
+                import os
+                os.unlink(temp_path)
+            except Exception as e:
+                st.error(f"Validation error: {e}")
+
+    with col2:
+        st.subheader("Scheduler Control")
+
+        if not st.session_state.scheduler_state["running"]:
+            if st.button("Start Scheduler", type="primary"):
+                try:
+                    import tempfile
+                    import threading
+
+                    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+                        f.write(schedule_yaml)
+                        temp_path = f.name
+
+                    from aurora.scheduling.scheduler import TaskScheduler
+
+                    scheduler = TaskScheduler(temp_path)
+                    st.session_state.scheduler_state["scheduler"] = scheduler
+                    st.session_state.scheduler_state["running"] = True
+                    st.session_state.scheduler_state["tasks"] = scheduler.list_tasks()
+
+                    def run_scheduler(sched):
+                        try:
+                            sched.run_forever(check_interval=30)
+                        except Exception as e:
+                            st.session_state.scheduler_state["log_messages"].append(f"Error: {e}")
+
+                    thread = threading.Thread(target=run_scheduler, args=(scheduler,), daemon=True)
+                    thread.start()
+
+                    st.success("Scheduler started!")
+                except Exception as e:
+                    st.error(f"Failed to start scheduler: {e}")
+        else:
+            if st.button("Stop Scheduler", type="secondary"):
+                try:
+                    scheduler = st.session_state.scheduler_state.get("scheduler")
+                    if scheduler:
+                        scheduler.stop()
+                    st.session_state.scheduler_state["running"] = False
+                    st.success("Scheduler stopped!")
+                except Exception as e:
+                    st.error(f"Failed to stop scheduler: {e}")
+
+        st.markdown("---")
+        st.markdown("### Task Status")
+
+        if st.session_state.scheduler_state["tasks"]:
+            import pandas as pd
+
+            task_df = pd.DataFrame(st.session_state.scheduler_state["tasks"])
+            st.dataframe(task_df, use_container_width=True)
+        else:
+            st.info("No tasks loaded. Validate schedule first.")
+
+        st.markdown("---")
+        st.markdown("### Recent Log Messages")
+
+        log_container = st.container()
+        for msg in st.session_state.scheduler_state["log_messages"][-10:]:
+            st.text(msg)
+
+        st.button("Refresh", key="refresh_scheduler")
+
+    show_disclaimer()
+
+
+def render_deployment_checklist() -> None:
+    """Render Deployment Checklist page."""
+    st.title(":clipboard: Deployment Checklist")
+
+    col1, col2 = st.columns([1, 2])
+
+    with col1:
+        st.subheader("Checklist Configuration")
+
+        export_path = st.text_input("Export Bundle Path", value="export/strategy_bundle.zip")
+        readiness_path = st.text_input("Readiness Report Path (optional)", value="data/demo/research_runs/latest/readiness_report.json")
+
+    with col2:
+        st.subheader("Checklist Results")
+
+        if st.button("Run Checklist", type="primary"):
+            st.markdown("---")
+            st.markdown("**:warning: Advisory Only Disclaimer:** This checklist is an advisory tool only. It does not guarantee safety or profitability. The decision to deploy is entirely at your own risk. Past performance does not guarantee future results.")
+            st.markdown("---")
+
+            with st.spinner("Running checklist..."):
+                try:
+                    from aurora.deployment.checklist import DeploymentChecklist
+                    import json
+                    import os
+
+                    strategy_metrics = {}
+                    if os.path.exists(readiness_path):
+                        with open(readiness_path) as f:
+                            readiness = json.load(f)
+                            strategy_metrics = {
+                                "sharpe_ratio": readiness.get("sharpe_ratio", 0),
+                                "win_rate": readiness.get("win_rate", 0),
+                                "max_drawdown": readiness.get("max_drawdown", 1),
+                            }
+
+                    checklist = DeploymentChecklist()
+                    results = checklist.run(
+                        export_bundle_path=export_path if os.path.exists(export_path) else None,
+                        readiness_report_path=readiness_path if os.path.exists(readiness_path) else None,
+                        strategy_metrics=strategy_metrics,
+                        answers={"doc_disclaimer_acknowledged": True},
+                    )
+
+                    passed_count = sum(1 for r in results if r.passed)
+                    total_count = len(results)
+
+                    if checklist.is_ready(results):
+                        st.success(f"READY - {passed_count}/{total_count} checks passed")
+                    else:
+                        st.warning(f"NOT READY - {passed_count}/{total_count} checks passed")
+
+                    for result in results:
+                        if result.passed:
+                            st.markdown(f"**:white_check_mark: {result.item_id}**: {result.details}")
+                        else:
+                            st.markdown(f"**:x: {result.item_id}**: {result.details}")
+
+                    st.markdown("---")
+                    report_data = {
+                        "generated_at": result.timestamp,
+                        "total_items": total_count,
+                        "passed": passed_count,
+                        "failed": total_count - passed_count,
+                        "results": [{"item_id": r.item_id, "passed": r.passed, "details": r.details} for r in results],
+                    }
+                    st.json(report_data)
+
+                    report_json = json.dumps(report_data, indent=2)
+                    st.download_button(
+                        label="Export Report as JSON",
+                        data=report_json,
+                        file_name="deployment_checklist_report.json",
+                        mime="application/json",
+                    )
+
+                except Exception as e:
+                    st.error(f"Checklist error: {e}")
+
+    show_disclaimer()
+
+
 def run_app() -> None:
     """Main entry point for the web app."""
     try:
@@ -390,6 +653,12 @@ def run_app() -> None:
             render_readiness_report()
         elif selected_page == "Optimizer":
             render_optimizer()
+        elif selected_page == "Export":
+            render_export()
+        elif selected_page == "Scheduler":
+            render_scheduler()
+        elif selected_page == "Deployment Checklist":
+            render_deployment_checklist()
 
     except RerunException:
         raise

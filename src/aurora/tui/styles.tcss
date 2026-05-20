@@ -1,0 +1,81 @@
+/* AURORA TUI Styles */
+
+Screen {
+    background: $accent;
+    layout: vertical;
+}
+
+#title {
+    width: 100%;
+    height: auto;
+    content-align: center middle;
+    text-style: bold;
+    color: $text;
+    background: $primary;
+    padding: 1;
+}
+
+#version, #tests, #safety {
+    width: 100%;
+    padding: 1;
+    color: $text;
+}
+
+#disclaimer {
+    width: 100%;
+    padding: 1;
+    color: $warning;
+    text-style: italic;
+}
+
+Container {
+    width: 100%;
+    height: auto;
+}
+
+Horizontal {
+    width: 100%;
+    height: auto;
+}
+
+Button {
+    margin: 1;
+}
+
+Input, Select, TextArea {
+    margin: 1;
+}
+
+DataTable {
+    margin: 1;
+}
+
+#main_layout {
+    height: 100%;
+}
+
+#form, #data_panel, #left_panel, #right_panel {
+    width: 50%;
+    height: 100%;
+    padding: 1;
+}
+
+#code_panel, #results_panel {
+    width: 50%;
+    height: 100%;
+    padding: 1;
+}
+
+#log_panel {
+    height: 80%;
+}
+
+#log_viewer {
+    height: 100%;
+    width: 100%;
+}
+
+Footer {
+    background: $primary;
+    color: $text;
+}

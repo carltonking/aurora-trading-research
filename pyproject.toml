@@ -13,18 +13,21 @@ authors = [
   { name = "AURORA Contributors" }
 ]
 dependencies = [
-  "pandas",
-  "numpy",
-  "scikit-learn",
-  "yfinance",
-  "pyyaml",
-  "python-dotenv",
-  "typer",
-  "streamlit",
-  "matplotlib",
-  "pytest",
-  "rich",
+    "pandas",
+    "numpy",
+    "scikit-learn",
+    "yfinance",
+    "pyyaml",
+    "python-dotenv",
+    "typer",
+    "streamlit",
+    "matplotlib",
+    "pytest",
+    "rich",
 ]
+
+[project.optional-dependencies]
+tui = ["textual>=0.40.0"]
 
 [project.scripts]
 aurora = "aurora.cli.app:app"

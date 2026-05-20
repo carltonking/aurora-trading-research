@@ -78,3 +78,54 @@ def test_cli_command_registered() -> None:
 
     assert hasattr(web_app_module, "APP_HOST")
     assert hasattr(web_app_module, "APP_PORT")
+
+
+def test_export_screen_function_exists() -> None:
+    """Test that render_export function exists."""
+    from aurora.web import app
+
+    assert hasattr(app, "render_export")
+    assert callable(app.render_export)
+
+
+def test_scheduler_screen_function_exists() -> None:
+    """Test that render_scheduler function exists."""
+    from aurora.web import app
+
+    assert hasattr(app, "render_scheduler")
+    assert callable(app.render_scheduler)
+
+
+def test_deployment_checklist_screen_function_exists() -> None:
+    """Test that render_deployment_checklist function exists."""
+    from aurora.web import app
+
+    assert hasattr(app, "render_deployment_checklist")
+    assert callable(app.render_deployment_checklist)
+
+
+def test_export_uses_strategy_exporter() -> None:
+    """Test that export screen imports StrategyExporter."""
+    try:
+        from aurora.export.strategy_exporter import StrategyExporter
+        assert StrategyExporter is not None
+    except ImportError as e:
+        pytest.fail(f"StrategyExporter import failed: {e}")
+
+
+def test_scheduler_uses_task_scheduler() -> None:
+    """Test that scheduler screen imports TaskScheduler."""
+    try:
+        from aurora.scheduling.scheduler import TaskScheduler
+        assert TaskScheduler is not None
+    except ImportError as e:
+        pytest.fail(f"TaskScheduler import failed: {e}")
+
+
+def test_deployment_checklist_uses_deployment_checklist() -> None:
+    """Test that deployment checklist screen imports DeploymentChecklist."""
+    try:
+        from aurora.deployment.checklist import DeploymentChecklist
+        assert DeploymentChecklist is not None
+    except ImportError as e:
+        pytest.fail(f"DeploymentChecklist import failed: {e}")

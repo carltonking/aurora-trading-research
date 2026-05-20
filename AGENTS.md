@@ -43,12 +43,32 @@ Run before completion:
 
 python3 -m pytest
 
-PYTHONPATH=src python3 -m aurora.cli.app demo run --output-root data/demo --latest-test-count 768
+PYTHONPATH=src python3 -m aurora.cli.app demo run --output-root data/demo --latest-test-count 787
 
 PYTHONPATH=src python3 -m aurora.cli.app reports safety-audit --no-fail-on-critical
 
-Expected current test count: 768 passed.
-Expected safety audit status: WARN (37 warnings, 8 critical), unless intentionally improved with matching tests and docs.
+Expected current test count: 787 passed.
+Expected safety audit status: WARN (45 findings), unless intentionally improved with matching tests and docs.
+
+## Interface Parity (Phase 7C)
+
+AURORA provides feature parity across three interfaces:
+
+| Feature | CLI | Web UI | TUI |
+|---------|-----|--------|-----|
+| Data Explorer | aurora data | Yes | Yes |
+| Strategy Builder | aurora strategy | Yes | Yes |
+| Backtest Runner | aurora backtest | Yes | Yes |
+| Paper Trading Monitor | aurora paper | Yes | Yes |
+| Readiness Report | aurora report | Yes | Yes |
+| Optimizer | aurora optimize | Yes | Yes |
+| Export | aurora export | Yes | Yes |
+| Scheduler | aurora scheduler | Yes | Yes (F9) |
+| Deployment Checklist | aurora deploy | Yes | Yes |
+| Settings | - | - | Yes (F10) |
+| Logs | aurora logs | - | Yes (F11) |
+
+All interfaces include mandatory disclaimers and do not support live trading.
 
 ## Implementation Rules
 

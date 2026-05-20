@@ -120,6 +120,7 @@ from aurora.security.sandbox import (
     SandboxViolationError,
 )
 from aurora.deployment.checklist import DeploymentChecklist, MANDATORY_DISCLAIMER
+from aurora.tui.app import check_textual, launch_tui
 from aurora.validation.exceptions import AuroraValidationError
 from aurora.validation.overfitting import diagnose_backtest_overfitting
 from aurora.validation.report import (
@@ -155,6 +156,7 @@ web_app = typer.Typer(help="Web UI commands")
 plugins_app = typer.Typer(help="Plugin management commands")
 security_app = typer.Typer(help="Security and sandbox commands")
 deployment_app = typer.Typer(help="Deployment readiness commands")
+tui_app = typer.Typer(help="Terminal User Interface commands")
 app.add_typer(data_app, name="data")
 app.add_typer(paper_app, name="paper")
 app.add_typer(optimize_app, name="optimize")
@@ -179,6 +181,7 @@ app.add_typer(web_app, name="web")
 app.add_typer(plugins_app, name="plugins")
 app.add_typer(security_app, name="security")
 app.add_typer(deployment_app, name="deploy")
+app.add_typer(tui_app, name="tui")
 console = Console()
 
 
@@ -4072,6 +4075,35 @@ def deploy_init_checklist(
 
     create_default_checklist_file(path)
     console.print(f"[green]Created default checklist:[/green] {path}")
+
+
+@tui_app.command("start")
+def tui_start(
+    screen: Annotated[
+        str | None,
+        typer.Option("--screen", "-s", help="Initial screen to display."),
+    ] = "home",
+    config: Annotated[
+        str | None,
+        typer.Option("--config", "-c", help="Path to .aurora.yml config file."),
+    ] = None,
+) -> None:
+    """Start the AURORA Terminal User Interface (TUI).
+
+    This launches a keyboard-navigable terminal application for all
+    major AURORA workflows. Requires Textual.
+
+    This command is research-only. No live trading, no broker calls.
+    """
+    if not check_textual():
+        console.print("[red]Error:[/red] Textual is not installed.")
+        console.print("Install with: pip install .[tui]")
+        raise typer.Exit(code=1)
+
+    console.print("[green]Starting AURORA TUI...[/green]")
+    console.print("[yellow]Disclaimer:[/yellow] Research-only. No profitability claimed.")
+
+    launch_tui(start_screen=screen, config_path=config)
 
 
 if __name__ == "__main__":
