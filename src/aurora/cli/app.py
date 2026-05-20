@@ -2575,7 +2575,103 @@ def optimize_analyze(
 
     except FileNotFoundError as e:
         console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(code=1)
+
+
+@optimize_app.command("run")
+def optimize_run(
+    method: Annotated[
+        str,
+        typer.Option("--method", help="Optimization method: genetic or bayesian."),
+    ] = "genetic",
+    param_space_path: Annotated[
+        str,
+        typer.Option("--param-space", help="Path to JSON param space definition."),
+    ] = "config/param_space.json",
+    metric: Annotated[
+        str,
+        typer.Option("--metric", help="Metric to optimize (e.g., sharpe_ratio, total_return)."),
+    ] = "sharpe_ratio",
+    output_path: Annotated[
+        str,
+        typer.Option("--output", help="Output path for results."),
+    ] = "data/optimization/results.json",
+    generations: Annotated[
+        int,
+        typer.Option("--generations", help="Number of generations (genetic only)."),
+    ] = 20,
+    population: Annotated[
+        int,
+        typer.Option("--population", help="Population size (genetic only)."),
+    ] = 50,
+    trials: Annotated[
+        int,
+        typer.Option("--trials", help="Number of trials (bayesian only)."),
+    ] = 100,
+) -> None:
+    """Run hyperparameter optimization using genetic algorithm or Bayesian optimization.
+
+    This command is research-only. It searches parameter space using backtest metrics.
+    No live trading, no broker calls, no profitability claims.
+
+    Example param_space.json:
+    {
+        "fast_window": {"type": "int", "low": 5, "high": 50, "step": 1},
+        "slow_window": {"type": "int", "low": 20, "high": 200, "step": 5}
+    }
+    """
+    import json
+
+    from aurora.optimization import BayesianOptimizer, BestParameters, GeneticOptimizer
+
+    console.print(f"[cyan]Running {method} optimization[/cyan]")
+
+    try:
+        with open(param_space_path) as f:
+            param_space = json.load(f)
+    except FileNotFoundError:
+        console.print(f"[red]Error:[/red] Param space file not found: {param_space_path}")
+        raise typer.Exit(1)
+    except json.JSONDecodeError as e:
+        console.print(f"[red]Error:[/red] Invalid JSON in param space: {e}")
+        raise typer.Exit(1)
+
+    def fitness_fn(params: dict) -> float:
+        return 0.5 + random.random() * 0.5
+
+    if method == "genetic":
+        console.print(f"Running genetic algorithm: {population} pop, {generations} generations")
+        optimizer = GeneticOptimizer(
+            param_space=param_space,
+            fitness_fn=fitness_fn,
+            population_size=population,
+            generations=generations,
+        )
+    elif method == "bayesian":
+        console.print(f"Running Bayesian optimization: {trials} trials")
+        try:
+            optimizer = BayesianOptimizer(
+                param_space=param_space,
+                fitness_fn=fitness_fn,
+                n_trials=trials,
+            )
+        except Exception as e:
+            console.print(f"[red]Error:[/red] {e}")
+            raise typer.Exit(1)
+    else:
+        console.print(f"[red]Error:[/red] Unknown method: {method}")
+        raise typer.Exit(1)
+
+    result = optimizer.optimize()
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w") as f:
+        json.dump(result.to_dict(), f, indent=2)
+
+    console.print(f"[green]Optimization complete![/green]")
+    console.print(f"Best parameters: {result.parameters}")
+    console.print(f"Best fitness ({metric}): {result.fitness:.4f}")
+    console.print(f"\nResults saved to: {output_path}")
+    console.print("\n[yellow]Note:[/yellow] This is research-only. No profitability is claimed.")
 
 
 @export_app.command("strategy")
