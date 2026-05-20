@@ -11,6 +11,7 @@ from typing import Any
 import yaml
 
 from aurora.strategies import archetypes
+from aurora.strategies.ensemble import EnsembleStrategy
 
 
 class StrategyBuilderError(Exception):
@@ -32,16 +33,21 @@ class StrategyBuilder:
         "grid_trading",
         "pairs_trading",
         "dca",
+        "ensemble",
     }
 
-    def __init__(self, config_path: str | Path | None = None):
-        """Initialize builder with optional config path.
+    def __init__(self, config_path: str | Path | dict | None = None):
+        """Initialize builder with optional config path or config dict.
 
         Args:
-            config_path: Path to JSON or YAML config file.
+            config_path: Path to JSON/YAML config file, or config dict directly.
         """
-        self.config_path = Path(config_path) if config_path else None
-        self.config: dict[str, Any] = {}
+        if isinstance(config_path, dict):
+            self.config_path = None
+            self.config = config_path
+        else:
+            self.config_path = Path(config_path) if config_path else None
+            self.config: dict[str, Any] = {}
 
     def load_config(self, config_path: str | Path | None = None) -> dict[str, Any]:
         """Load configuration from file.
@@ -106,6 +112,9 @@ class StrategyBuilder:
         parameters = self.config["parameters"]
         strategy_name = self.config["strategy_name"]
 
+        if archetype_name == "ensemble":
+            return self._build_ensemble(strategy_name, parameters)
+
         archetype_class = archetypes.get_archetype(archetype_name)
 
         try:
@@ -116,6 +125,31 @@ class StrategyBuilder:
             raise StrategyBuilderError(f"Invalid parameters for {archetype_name}: {e}")
         except ValueError as e:
             raise StrategyBuilderError(f"Parameter validation failed: {e}")
+
+    def _build_ensemble(self, strategy_name: str, parameters: dict) -> EnsembleStrategy:
+        """Build an ensemble strategy from configuration."""
+        method = parameters.get("method", "vote")
+        sub_configs = parameters.get("strategies", [])
+
+        if not sub_configs:
+            raise StrategyBuilderError("ensemble must have at least one sub-strategy")
+
+        strategies = []
+        for sub_config in sub_configs:
+            sub_archetype = sub_config.get("archetype")
+            sub_params = sub_config.get("parameters", {})
+            weight = sub_config.get("weight", 1.0)
+
+            if not sub_archetype:
+                raise StrategyBuilderError("each sub-strategy must have an archetype")
+
+            sub_class = archetypes.get_archetype(sub_archetype)
+            sub_strategy = sub_class(**sub_params)
+            strategies.append((sub_strategy, weight))
+
+        ensemble = EnsembleStrategy(strategies=strategies, method=method)
+        ensemble.strategy_name = strategy_name
+        return ensemble
 
     def generate_code(self) -> str:
         """Generate Python source code for the strategy.
