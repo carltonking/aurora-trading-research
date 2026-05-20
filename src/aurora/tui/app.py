@@ -9,7 +9,7 @@ try:
     from textual.app import App
     from textual.binding import Binding
     from textual.containers import Container
-    from textual.widgets import Static, Button, Input, DataTable, Footer, Header, TabbedContent
+    from textual.widgets import Static, Button, Input, DataTable, Footer, Header, TabbedContent, TabPane
 except ImportError:
     raise ImportError(
         "Textual is not installed. Install with: pip install .[tui]"
@@ -75,13 +75,13 @@ class AuroraTUI(App):
     def compose(self) -> Any:
         """Compose the app layout."""
         yield Header()
-        yield Container(
-            TabbedContent(*[
-                (name.replace("_", " ").title(), screen())
-                for name, screen in self.SCREENS.items()
-            ])
-        )
+        with TabbedContent():
+            for name, screen_cls in self.SCREENS.items():
+                title = name.replace("_", " ").title()
+                with TabPane(title):
+                    yield screen_cls()
         yield DisclaimerFooter()
+        yield Footer()
 
     def on_mount(self) -> None:
         """Set up initial screen and show welcome notification."""
