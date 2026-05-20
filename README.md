@@ -97,8 +97,23 @@ AURORA v2.2.0 adds 27 new features across research, paper trading, strategy deve
 - Deployment checklist is advisory only - never grants live trading permission
 - Kill-switch triggers add runtime safety gates
 
-- Latest verified test result: `768 passed`
-- Safety audit status: `WARN (37 warnings, 8 critical)`
+- Latest verified test result: `787 passed`
+- Safety audit status: `WARN (45 findings)`
+
+## What's New in v2.2.1
+
+### Terminal User Interface (TUI)
+- **Textual-based TUI**: Full terminal UI with 10 screens
+- **Keyboard navigation**: F1-Home, F2-Data, F3-Strategy, F4-Backtest, F5-Paper, F6-Optimize, F7-Readiness, F8-Export, F9-Scheduler, F10-Settings, F11-Logs
+- **Custom widgets**: MetricCard, SparklineChart, DisclaimerFooter
+
+### Web UI Updates
+- **Export Screen**: Generate and download strategy export bundles
+- **Scheduler Screen**: Edit schedule YAML, validate, start/stop scheduler
+- **Deployment Checklist Screen**: Run checklist, view results, export JSON
+
+### Interface Parity
+- All 11 primary features available in CLI, Web UI, and TUI
 
 ## What's New in v2.1.0
 

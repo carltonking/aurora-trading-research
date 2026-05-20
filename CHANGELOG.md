@@ -4,6 +4,34 @@ All notable changes to AURORA Trading Research will be documented in this file.
 
 ## Unreleased
 
+## v2.2.1-rc1 - 2026-05-20
+
+### Added
+
+**Terminal User Interface (TUI):**
+- Textual-based terminal UI with 10 screens: Home, Data Explorer, Strategy Builder, Backtest Runner, Paper Monitor, Optimizer, Readiness Report, Export, Settings, Logs
+- Keyboard shortcuts (F1-F11) for navigation
+- Disclaimer footer on all screens
+- Custom widgets: MetricCard, SparklineChart, DisclaimerFooter
+
+**Web UI Enhancements:**
+- Export Screen: strategy export bundle generation with download
+- Scheduler Screen: YAML schedule editor, validate, start/stop scheduler
+- Deployment Checklist Screen: run checklist, view results, export JSON
+
+**Interface Parity:**
+- All 11 primary features available in CLI, Web UI, and TUI
+- Interface comparison table in AGENTS.md documentation
+
+### Testing
+- 787 tests passed (baseline 778 + 9 new tests)
+- TUI screen tests, Web UI function tests added
+
+### Safety
+- All existing safety boundaries maintained
+- No live trading, no broker execution
+- All interfaces include mandatory disclaimers
+
 ## v2.2.0-rc1 - 2026-05-20
 
 ### Added
