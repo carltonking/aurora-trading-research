@@ -33,7 +33,7 @@ def test_app_constants() -> None:
     """Test that app constants are defined correctly."""
     from aurora.web import app
 
-    assert app.APP_VERSION == "0.1.0"
+    assert app.APP_VERSION == "3.0.0"
     assert app.APP_TITLE == "AURORA Research Dashboard"
     assert app.APP_HOST == "127.0.0.1"
     assert app.APP_PORT == 8501

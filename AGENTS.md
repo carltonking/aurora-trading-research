@@ -43,11 +43,16 @@ Run before completion:
 
 python3 -m pytest
 
-PYTHONPATH=src python3 -m aurora.cli.app demo run --output-root data/demo --latest-test-count 787
+PYTHONPATH=src python3 -m aurora.cli.app demo run --output-root data/demo --latest-test-count 824
 
 PYTHONPATH=src python3 -m aurora.cli.app reports safety-audit --no-fail-on-critical
 
-Expected current test count: 787 passed.
+Expected current test count: 824 passed.
+
+## Key Documentation
+
+- `README.md` — Main project documentation with methodology overview and feature guide
+- `docs/RESEARCH_PHILOSOPHY.md` — Detailed technical rationale for CPCV, DSR, leakage detection, and the multiple comparisons problem in strategy research
 Expected safety audit status: WARN (45 findings), unless intentionally improved with matching tests and docs.
 
 ## Interface Parity (Phase 7C)

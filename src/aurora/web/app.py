@@ -19,7 +19,7 @@ except ImportError:
     )
 
 
-APP_VERSION = "0.1.0"
+APP_VERSION = "3.0.0"
 APP_TITLE = "AURORA Research Dashboard"
 APP_HOST = "127.0.0.1"
 APP_PORT = 8501

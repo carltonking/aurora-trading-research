@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aurora-trading-research"
-version = "0.1.0"
+version = "3.0.0"
 description = "Research-first platform for ML-assisted trading strategy validation with strict risk controls."
 readme = "README.md"
 requires-python = ">=3.10"

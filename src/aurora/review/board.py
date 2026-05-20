@@ -41,6 +41,8 @@ _DIAGNOSTIC_WARNING_CODES = {
     "low_window_pass_rate",
     "low_walk_forward_trade_count",
     "low_trade_count",
+    "cpcv_overfitting_probability",
+    "cpcv_deflated_sharpe_ratio_low",
 }
 
 
@@ -65,6 +67,8 @@ class ReviewBoardConfig:
     require_manifest_safety_flags: bool = True
     require_diagnostics: bool = True
     allow_paper_simulation_approval: bool = True
+    cpcv_overfitting_threshold: float = 0.5
+    cpcv_deflated_sharpe_threshold: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -120,6 +124,12 @@ def review_research_run(config: ReviewBoardConfig) -> ReviewBoardResult:
 
     report_path = _artifact_path(manifest, run_dir, "report", "report.md")
     findings.extend(_report_language_findings(report_path))
+
+    cpcv_path = _artifact_path(manifest, run_dir, "cpcv", "cpcv_report.json")
+    findings.extend(_cpcv_findings(cpcv_path, config))
+
+    leakage_path = run_dir / "leakage_report.json"
+    findings.extend(_leakage_findings(leakage_path))
 
     status = _decide_status(findings, config.allow_paper_simulation_approval)
     output_path = Path(config.output_path) if config.output_path else run_dir / "review.json"
@@ -317,6 +327,136 @@ def _report_language_findings(report_path: Path | None) -> list[ReviewFinding]:
                     message=f"Report contains disallowed profitability language: {phrase}.",
                 )
             )
+    return findings
+
+
+def _cpcv_findings(
+    cpcv_path: Path | None,
+    config: ReviewBoardConfig,
+) -> list[ReviewFinding]:
+    """Check CPCV overfitting findings from research run."""
+    if cpcv_path is None or not cpcv_path.exists():
+        return []
+    findings = []
+    try:
+        data = json.loads(cpcv_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    summary = data.get("summary", {})
+    bop = summary.get("backtest_overfitting_probability")
+    dsr = summary.get("deflated_sharpe_ratio")
+    n_paths = summary.get("n_paths_tested", 0)
+    disclaimer = data.get("disclaimer", "")
+
+    if n_paths > 0:
+        findings.append(
+            ReviewFinding(
+                code="cpcv_n_paths",
+                severity=REVIEW_INFO,
+                message=f"CPCV tested {n_paths} combinatorial paths.",
+            )
+        )
+        findings.append(
+            ReviewFinding(
+                code="cpcv_mean_sharpe",
+                severity=REVIEW_INFO,
+                message=f"CPCV mean path Sharpe: {summary.get('mean_path_sharpe', 0):.3f}",
+            )
+        )
+
+    if bop is not None and bop > config.cpcv_overfitting_threshold:
+        findings.append(
+            ReviewFinding(
+                code="cpcv_overfitting_probability",
+                severity=REVIEW_WARNING,
+                message=(
+                    f"CPCV indicates elevated overfitting risk: "
+                    f"backtest_overfitting_probability={bop:.2%} > {config.cpcv_overfitting_threshold:.0%}. "
+                    "CPCV indicates elevated overfitting risk. "
+                    f"Deflated Sharpe Ratio={dsr:.3f}."
+                ),
+            )
+        )
+    elif bop is not None and n_paths > 0:
+        findings.append(
+            ReviewFinding(
+                code="cpcv_overfitting_ok",
+                severity=REVIEW_INFO,
+                message=f"CPCV overfitting probability {bop:.2%} is within acceptable range.",
+            )
+        )
+
+    if dsr is not None and 0 < dsr < config.cpcv_deflated_sharpe_threshold:
+        findings.append(
+            ReviewFinding(
+                code="cpcv_deflated_sharpe_ratio_low",
+                severity=REVIEW_WARNING,
+                message=(
+                    f"CPCV Deflated Sharpe Ratio={dsr:.3f} < {config.cpcv_deflated_sharpe_threshold:.1f}. "
+                    "Strategy edge may not survive multiple testing correction."
+                ),
+            )
+        )
+
+    if disclaimer:
+        findings.append(
+            ReviewFinding(
+                code="cpcv_disclaimer_present",
+                severity=REVIEW_INFO,
+                message="CPCV report includes mandatory disclaimer.",
+            )
+        )
+
+    return findings
+
+
+def _leakage_findings(leakage_path: Path | None) -> list[ReviewFinding]:
+    """Check leakage detection findings from research run."""
+    if leakage_path is None or not leakage_path.exists():
+        return []
+    findings = []
+    try:
+        data = json.loads(leakage_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    verdict = data.get("verdict", "UNKNOWN")
+    critical_count = data.get("critical_count", 0)
+    warning_count = data.get("warning_count", 0)
+
+    if verdict == "COMPROMISED":
+        findings.append(
+            ReviewFinding(
+                code="feature_leakage_detected",
+                severity=REVIEW_CRITICAL,
+                message=(
+                    f"Feature leakage detected (COMPROMISED verdict). "
+                    f"{critical_count} critical findings, {warning_count} warnings. "
+                    "Results are invalid. Remove forward-looking features before "
+                    "proceeding. "
+                    "Feature leakage detected — results invalid."
+                ),
+            )
+        )
+    elif verdict == "SUSPECT":
+        findings.append(
+            ReviewFinding(
+                code="feature_leakage_suspect",
+                severity=REVIEW_WARNING,
+                message=(
+                    f"Feature leakage investigation recommended (SUSPECT verdict). "
+                    f"{warning_count} warnings. Review leakage_report.json."
+                ),
+            )
+        )
+    elif verdict == "CLEAN":
+        findings.append(
+            ReviewFinding(
+                code="feature_leakage_verified_clean",
+                severity=REVIEW_INFO,
+                message="Feature leakage detection passed (CLEAN verdict).",
+            )
+        )
+
     return findings
 
 

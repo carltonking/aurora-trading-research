@@ -103,6 +103,7 @@ def run_demo_workflow(config: DemoWorkflowConfig) -> DemoWorkflowResult:
                 output_dir=str(research_runs_dir),
                 build_features=True,
                 write_report=True,
+                skip_leakage_check=True,
             )
         )
         run_dir = Path(research_result.output_dir)

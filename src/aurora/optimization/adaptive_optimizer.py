@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 
-OPTIMIZER_VERSION = "0.1.0"
+OPTIMIZER_VERSION = "3.0.0"
 
 
 @dataclass

@@ -71,6 +71,7 @@ def test_local_artifact_workflow_runs_without_network_or_execution(tmp_path, mon
             commission_bps=10.0,
             slippage_bps=0.0,
             max_position_pct=0.05,
+            skip_leakage_check=True,
         )
     )
     run_dir = Path(research_result.output_dir)

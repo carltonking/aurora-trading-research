@@ -1,6 +1,6 @@
 """TUI Constants."""
 
-APP_VERSION = "2.2.0-rc1"
+APP_VERSION = "3.0.0"
 
 MANDATORY_DISCLAIMER = (
     "DISCLAIMER: AURORA is research-only. Past performance does not guarantee "

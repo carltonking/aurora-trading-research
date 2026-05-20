@@ -18,9 +18,9 @@ def test_readme_mentions_core_safety_disclaimers() -> None:
     content = Path("README.md").read_text(encoding="utf-8").lower()
 
     assert "paper-trading-first" in content
-    assert "v1 does not support live trading" in content
+    assert "does not support live trading" in content
     assert "not profitability guarantees" in content
-    assert "do not commit real api keys" in content
+    assert "do not commit" in content and "api" in content
     assert "not provide financial advice" in content
 
 

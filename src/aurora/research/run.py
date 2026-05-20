@@ -26,6 +26,11 @@ from aurora.strategies.exceptions import (
 from aurora.strategies.registry import instantiate_strategy, load_strategy_from_registry
 from aurora.validation.overfitting import diagnose_backtest_overfitting
 from aurora.validation.report import overfitting_report_to_dict
+from aurora.validation.leakage_monitor import (
+    check_leakage_for_run,
+    load_leakage_report,
+    LeakageError,
+)
 
 DATA_MODE_CACHE_ONLY = "cache_only"
 DATA_MODE_DOWNLOAD_IF_MISSING = "download_if_missing"
@@ -58,6 +63,7 @@ class ResearchRunConfig:
     max_position_pct: float | None = None
     build_features: bool = True
     write_report: bool = True
+    skip_leakage_check: bool = False
 
 
 @dataclass(frozen=True)
@@ -143,6 +149,63 @@ def run_research_cycle(config: ResearchRunConfig) -> ResearchRunResult:
         signals_path = run_dir / "signals.csv"
         signal_df.to_csv(signals_path, index=False)
 
+        from aurora.models.labels import create_forward_return_label
+
+        label_config = {"price_col": "close", "horizon": 5}
+        try:
+            labeled = create_forward_return_label(strategy_input, **label_config)
+            label_series = labeled.set_index("timestamp")["future_return_5d"]
+        except Exception:
+            label_series = pd.Series(dtype=float)
+
+        feature_files = [
+            str(run_dir / "features.csv"),
+        ]
+
+        if resolved_config.skip_leakage_check:
+            warnings.append("leakage_check_skipped=skip_leakage_check=True")
+            leakage_report = {}
+            leakage_verdict = "UNKNOWN"
+        else:
+            leakage_report: dict[str, Any] = {}
+            leakage_verdict = "UNKNOWN"
+            try:
+                if "symbol" in strategy_input.columns:
+                    first_symbol = strategy_input["symbol"].iloc[0]
+                    label_filtered = labeled[labeled["symbol"] == first_symbol].set_index("timestamp")["future_return_5d"]
+                    features_filtered = strategy_input[strategy_input["symbol"] == first_symbol].copy()
+                else:
+                    label_filtered = label_series
+                    features_filtered = strategy_input.copy()
+                feature_subset = features_filtered[["timestamp", "close"] + [c for c in features_filtered.columns if c in ("return_1d", "return_5d", "return_20d", "rsi_14", "macd", "volume_change_1d")]].copy()
+                feature_subset = feature_subset.rename(columns={"timestamp": "_ts"}).set_index("_ts").sort_index()
+                leakage_feature_df = feature_subset
+                try:
+                    if leakage_feature_df.empty:
+                        raise ValueError("Feature DataFrame is empty")
+                    if label_filtered.empty:
+                        raise ValueError("Label series is empty")
+                    if len(leakage_feature_df.index) < 30:
+                        raise ValueError(f"Insufficient data: {len(leakage_feature_df.index)} rows")
+                    leakage_report = check_leakage_for_run(
+                        run_dir=str(run_dir),
+                        feature_df=leakage_feature_df,
+                        label_series=label_filtered,
+                        feature_files=feature_files,
+                        horizon_days=5,
+                        p_value_threshold=0.001,
+                        bonferroni_correction=True,
+                        correlation_threshold=0.3,
+                    )
+                    leakage_verdict = leakage_report.get("verdict", "UNKNOWN")
+                    warnings.append(f"leakage_verdict={leakage_verdict}")
+                except Exception as inner_exc:
+                    warnings.append(f"leakage_check_skipped={inner_exc}")
+            except LeakageError:
+                raise
+            except Exception as exc:
+                warnings.append(f"leakage_check_skipped={exc}")
+
         backtest_result = _run_backtest(signal_df, config, strategy_config.risk)
         equity_path = run_dir / "equity_curve.csv"
         trades_path = run_dir / "trades.csv"
@@ -210,6 +273,7 @@ def run_research_cycle(config: ResearchRunConfig) -> ResearchRunResult:
         metrics=metrics,
         diagnostics=diagnostics,
         warnings=warnings,
+        leakage_report=leakage_report,
     )
     save_json_report(manifest, manifest_path)
 
@@ -451,8 +515,9 @@ def _build_manifest(
     metrics: dict[str, Any],
     diagnostics: dict[str, Any],
     warnings: list[str],
+    leakage_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    manifest: dict[str, Any] = {
         "run_id": run_id,
         "strategy_id": config.strategy_id,
         "created_at": started_at,
@@ -471,6 +536,17 @@ def _build_manifest(
         "warnings": list(warnings),
         "safety_flags": dict(RESEARCH_RUN_SAFETY_FLAGS),
     }
+
+    if leakage_report:
+        manifest["leakage_verdict"] = leakage_report.get("verdict", "UNKNOWN")
+        manifest["leakage_verified"] = leakage_report.get("verdict") == "CLEAN"
+        if leakage_report.get("verdict") == "COMPROMISED":
+            manifest["safety_flags"] = manifest.get("safety_flags", {})
+            manifest["safety_flags"]["leakage_detected"] = True
+        if "leakage_report_path" in leakage_report:
+            manifest["leakage_report_path"] = leakage_report["leakage_report_path"]
+
+    return manifest
 
 
 def _diagnostic_messages(diagnostics: dict[str, Any]) -> list[str]:

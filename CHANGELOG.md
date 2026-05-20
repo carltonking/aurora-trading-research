@@ -2,41 +2,90 @@
 
 All notable changes to AURORA Trading Research will be documented in this file.
 
-## Unreleased
+## v3.0.0 - 2026-05-20
 
-## v2.2.1-rc1 - 2026-05-20
+### Added
+
+**Combinatorial Purged Cross-Validation (CPCV) with Deflated Sharpe Ratio:**
+
+- CPCV partitions the historical timeline into combinatorial train/test paths with purge buffers that prevent information from leaking across the boundary at decision time
+- Multiple non-overlapping test sets produce a distribution of performance metrics rather than a single number
+- Deflated Sharpe Ratio (DSR) adjusts observed Sharpe for selection bias from multiple trials using Bailey & López de Prado (2012) methodology
+- Selection Bias Score quantifies the probability that observed performance came from the search process rather than actual edge
+- CPCV walk-forward validator replaces single-path backtesting as the primary validation method
+- Research run diagnostics now include DSR, mean/std of CPCV Sharpe distribution, overfitting probability, and Selection Bias Score
+
+**Automated Feature Leakage Detection:**
+
+- Static AST analysis scans feature source code for lookahead patterns (negative shifts, unlagged operations) before every backtest
+- Runtime correlation testing computes statistical independence between each feature and future label values at multiple horizons
+- COMPROMISED verdict (static CRITICAL findings or statistically significant forward correlations) blocks the research run and sets `placed_orders: false`, `used_broker: false` in manifest
+- SUSPECT verdict (runtime WARNING findings) adds to manifest warnings without blocking
+- CLEAN verdict clears the run and records `leakage_verified: true`
+- Leakage monitor integrates into every research run pipeline automatically
+
+**Strategy Candidate Review Board — CPCV Thresholds:**
+
+- Review board now evaluates CPCV overfitting probability and DSR alongside existing Sharpe/drawdown/win rate thresholds
+- CPCV overfitting probability above threshold triggers NEEDS_MORE_RESEARCH
+- DSR below zero triggers NEEDS_MORE_RESEARCH regardless of naive Sharpe
+- APPROVED_FOR_PAPER_SIMULATION requires passing both CPCV and DSR gates
+- All thresholds are deterministic rules, not human judgment
+
+**Documentation:**
+
+- README.md rewritten from feature checklist to methodology document — opens with the problem (most backtests are methodologically broken), explains what most frameworks get wrong, and describes how AURORA addresses each point
+- docs/RESEARCH_PHILOSOPHY.md added as standalone technical document covering the multiple comparisons problem, DSR intuition, CPCV rationale, leakage taxonomy (label, normalization, feature, temporal), and honest researcher's checklist
+- References to Bailey & López de Prado (2012) and López de Prado (2018) for specific methodological claims
+
+### Testing
+
+- 824 tests passed (37 new tests covering leakage detector, monitor, and CPCV/DSR integration)
+- All safety boundaries maintained: no live trading, no broker execution, no external LLM calls
+
+### Safety
+
+- Leakage detector blocks COMPROMISED runs automatically before backtesting proceeds
+- Review board enforces CPCV and DSR thresholds as hard gates for paper simulation approval
+- Research run manifest records leakage verdict and overfitting probability for auditability
 
 ### Added
 
 **Terminal User Interface (TUI):**
+
 - Textual-based terminal UI with 10 screens: Home, Data Explorer, Strategy Builder, Backtest Runner, Paper Monitor, Optimizer, Readiness Report, Export, Settings, Logs
 - Keyboard shortcuts (F1-F11) for navigation
 - Disclaimer footer on all screens
 - Custom widgets: MetricCard, SparklineChart, DisclaimerFooter
 
 **Web UI Enhancements:**
+
 - Export Screen: strategy export bundle generation with download
 - Scheduler Screen: YAML schedule editor, validate, start/stop scheduler
 - Deployment Checklist Screen: run checklist, view results, export JSON
 
 **Interface Parity:**
+
 - All 11 primary features available in CLI, Web UI, and TUI
 - Interface comparison table in AGENTS.md documentation
 
 ### Testing
+
 - 787 tests passed (baseline 778 + 9 new tests)
 - TUI screen tests, Web UI function tests added
 
 ### Safety
+
 - All existing safety boundaries maintained
 - No live trading, no broker execution
 - All interfaces include mandatory disclaimers
 
-## v2.2.0-rc1 - 2026-05-20
+## v2.2.0 - 2026-05-20
 
 ### Added
 
 **Research & Validation:**
+
 - Monte Carlo simulation for backtest robustness
 - Stress testing with built-in scenarios (2008 crash, 2020 covid, rate shock)
 - Sensitivity analysis for parameter robustness
@@ -45,28 +94,33 @@ All notable changes to AURORA Trading Research will be documented in this file.
 - Intraday data support
 
 **Paper Trading Realism:**
+
 - Real-time streaming for paper trading
 - Slippage/commission models
 - Order queue and latency simulation
 - Paper trading dashboard
 
 **Strategy Development:**
+
 - Grid, Pairs, DCA archetypes
 - Ensemble strategies
 - Advanced optimizers (genetic, Bayesian)
 - Walk-forward optimizer
 
 **Risk & Portfolio:**
+
 - Portfolio RiskManager
 - Dynamic position sizing
 - Kill-switch triggers
 
 **Reporting:**
+
 - Equity curve plotting
 - PDF readiness report
 - Diffable artifacts
 
 **Infrastructure:**
+
 - Persistent config files (.aurora.yml)
 - Task scheduler
 - Local web UI (Streamlit)
@@ -83,7 +137,7 @@ All notable changes to AURORA Trading Research will be documented in this file.
 - Kill-switch triggers add runtime safety gates
 - All modules follow existing safety boundaries: no live trading, no real broker execution
 
-## v2.1.0-rc1 - 2026-05-19
+## v2.1.0 - 2026-05-19
 
 ### Added
 
@@ -117,7 +171,7 @@ All notable changes to AURORA Trading Research will be documented in this file.
 - Disabled paper broker adapter interface and Alpaca paper adapter stub scaffolding for future controlled integration work.
 - v2 release-candidate documentation and safety status updates.
 
-## v1.0.0-rc1 - 2026-05-18
+## v1.0.0 - 2026-05-18
 
 Release candidate for the first GitHub-ready AURORA v1 package.
 

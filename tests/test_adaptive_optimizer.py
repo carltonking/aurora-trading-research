@@ -184,7 +184,7 @@ def test_optimizer_version_set() -> None:
         strategy_name="test",
         status="PROPOSED_FOR_REVIEW",
     )
-    assert proposal.optimizer_version == "0.1.0"
+    assert proposal.optimizer_version == "3.0.0"
 
 
 def create_paper_metrics_file(base_path: Path, metrics: dict) -> Path:

@@ -69,7 +69,7 @@ def test_tui_constants_defined() -> None:
     """Test that constants are defined."""
     from aurora.tui.constants import APP_VERSION, MANDATORY_DISCLAIMER
 
-    assert APP_VERSION == "2.2.0-rc1"
+    assert APP_VERSION == "3.0.0"
     assert "DISCLAIMER" in MANDATORY_DISCLAIMER
     assert "research-only" in MANDATORY_DISCLAIMER
 

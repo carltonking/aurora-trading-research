@@ -130,6 +130,8 @@ from aurora.validation.report import (
     walk_forward_result_to_dict,
 )
 from aurora.validation.walk_forward import WalkForwardConfig, run_walk_forward_validation
+from aurora.validation.cpcv import CPCVConfig, run_cpcv_validation
+from aurora.validation.leakage_detector import run_leakage_detection
 
 app = typer.Typer(help="AURORA Trading Research CLI")
 data_app = typer.Typer(help="Market data commands")
@@ -1105,6 +1107,258 @@ def validation_walk_forward(
         console.print(f"[green]Validation report saved:[/green] {path}")
 
     if not result.passed:
+        raise typer.Exit(1)
+
+
+@validation_app.command("cpcv")
+def validation_cpcv(
+    signals_key: Annotated[
+        str,
+        typer.Option("--signals-key", help="Cache key for signal DataFrame."),
+    ],
+    n_splits: Annotated[
+        int,
+        typer.Option("--n-splits", help="Total number of groups (k) for CPCV."),
+    ] = 6,
+    n_test_splits: Annotated[
+        int,
+        typer.Option("--n-test-splits", help="Number of groups used for test."),
+    ] = 2,
+    purge_days: Annotated[
+        int,
+        typer.Option("--purge-days", help="Days to purge before test start."),
+    ] = 21,
+    embargo_days: Annotated[
+        int,
+        typer.Option("--embargo-days", help="Days to embargo after test end."),
+    ] = 5,
+    observed_sharpe: Annotated[
+        float,
+        typer.Option("--observed-sharpe", help="Observed Sharpe from full backtest for DSR."),
+    ] = 0.0,
+    output_path: Annotated[
+        str | None,
+        typer.Option("--output-path", help="Optional JSON report output path."),
+    ] = None,
+    output_plot: Annotated[
+        str | None,
+        typer.Option("--output-plot", help="Optional path for equity curve plot."),
+    ] = None,
+) -> None:
+    """Run Combinatorial Purged Cross-Validation (CPCV) on cached signals.
+
+    CPCV generates multiple train/test paths through combinatorial selection of
+    groups, with purging and embargo to prevent information leakage. Produces
+    a distribution of performance metrics to detect backtest overfitting.
+
+    Based on López de Prado, "Advances in Financial Machine Learning", Chapter 12.
+
+    This command is research-only. No live trading, no broker calls.
+    """
+    console.print(f"[cyan]Loading signals:[/cyan] {signals_key}")
+    signal_df = load_market_data(signals_key)
+    if signal_df is None:
+        console.print(f"[red]Signal cache key not found:[/red] {signals_key}")
+        raise typer.Exit(1)
+
+    config = CPCVConfig(
+        n_splits=n_splits,
+        n_test_splits=n_test_splits,
+        purge_days=purge_days,
+        embargo_days=embargo_days,
+    )
+
+    console.print(
+        f"[cyan]Running CPCV:[/cyan] {n_splits} groups, "
+        f"{n_test_splits} test groups, purge={purge_days}d, embargo={embargo_days}d"
+    )
+
+    try:
+        result = run_cpcv_validation(signal_df, config, observed_sharpe=float(observed_sharpe))
+    except Exception as exc:
+        console.print(f"[red]CPCV validation failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    summary = result.summary
+    n_paths = summary.get("n_paths_tested", 0)
+
+    console.print(f"\n[bold]CPCV Results[/bold] ({n_paths} paths)")
+    table = Table(show_header=True)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="white")
+    table.add_row("Mean Path Sharpe", f"{summary.get('mean_path_sharpe', 0):.3f}")
+    table.add_row("Sharpe Std", f"{summary.get('sharpe_std', 0):.3f}")
+    table.add_row("Worst Path Sharpe", f"{summary.get('worst_path_sharpe', 0):.3f}")
+    table.add_row("Best Path Sharpe", f"{summary.get('best_path_sharpe', 0):.3f}")
+    table.add_row("% Profitable Paths", f"{summary.get('pct_profitable', 0):.1%}")
+    table.add_row("Deflated Sharpe Ratio", f"{summary.get('deflated_sharpe_ratio', 0):.3f}")
+    table.add_row("Overfitting Probability", f"{summary.get('backtest_overfitting_probability', 0):.1%}")
+    console.print(table)
+
+    if output_plot is not None and n_paths > 0:
+        try:
+            from aurora.validation.path_analysis import plot_equity_curves
+            path_dicts = [p.to_dict() for p in result.paths]
+            plot_meta = plot_equity_curves(path_dicts, title="CPCV Equity Curves", output_path=output_plot)
+            if "error" not in plot_meta:
+                console.print(f"[green]Plot saved:[/green] {output_plot}")
+            else:
+                console.print(f"[yellow]Plot unavailable:[/yellow] {plot_meta.get('error')}")
+        except Exception as exc:
+            console.print(f"[yellow]Plot generation skipped:[/yellow] {exc}")
+
+    if output_path is not None:
+        try:
+            import json
+            output_file = Path(output_path)
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            with output_file.open("w") as f:
+                json.dump(result.to_dict(), f, indent=2)
+            console.print(f"[green]CPCV report saved:[/green] {output_path}")
+        except Exception as exc:
+            console.print(f"[red]Failed to save report:[/red] {exc}")
+            raise typer.Exit(1) from exc
+
+    if summary.get("backtest_overfitting_probability", 0) > 0.5:
+        console.print(
+            "[yellow]CPCV overfitting probability > 0.5:[/yellow] "
+            "strategy may be overfit to historical data. Review before paper trading."
+        )
+    if summary.get("deflated_sharpe_ratio", 0) < 0.5 and summary.get("deflated_sharpe_ratio", 0) > 0:
+        console.print(
+            "[yellow]Deflated Sharpe Ratio < 0.5:[/yellow] "
+            "strategy edge may not survive multiple testing correction."
+        )
+
+    console.print(f"\n[dim]{result.disclaimer}[/dim]")
+
+
+@validation_app.command("leakage")
+def validation_leakage(
+    feature_key: Annotated[
+        str,
+        typer.Option("--feature-key", help="Cache key for feature DataFrame."),
+    ],
+    label_key: Annotated[
+        str,
+        typer.Option("--label-key", help="Cache key for label Series."),
+    ],
+    horizon: Annotated[
+        int,
+        typer.Option("--horizon", help="Prediction horizon in days."),
+    ] = 5,
+    feature_files: Annotated[
+        str | None,
+        typer.Option("--feature-files", help="Comma-separated list of Python files to scan."),
+    ] = None,
+    output_path: Annotated[
+        str | None,
+        typer.Option("--output-path", help="Optional JSON report output path."),
+    ] = None,
+) -> None:
+    """Run feature leakage detection on cached signals and labels.
+
+    Performs static AST analysis on Python source files and runtime correlation
+    testing between features and future labels. Detects lookahead bias before
+    it corrupts backtest results.
+
+    This command is research-only. No live trading, no broker calls.
+    """
+    console.print(f"[cyan]Loading features:[/cyan] {feature_key}")
+    feature_df = load_market_data(feature_key)
+    if feature_df is None:
+        console.print(f"[red]Feature cache key not found:[/red] {feature_key}")
+        raise typer.Exit(1)
+
+    label_series: pd.Series | None = None
+    if label_key:
+        console.print(f"[cyan]Loading labels:[/cyan] {label_key}")
+        label_data = load_market_data(label_key)
+        if label_data is None:
+            console.print(f"[red]Label cache key not found:[/red] {label_key}")
+            raise typer.Exit(1)
+        if isinstance(label_data, pd.DataFrame):
+            label_series = label_data.iloc[:, 0]
+        else:
+            label_series = label_data
+    else:
+        console.print("[yellow]No label key provided — running static analysis only[/yellow]")
+
+    files: list[str] = []
+    if feature_files:
+        files = [f.strip() for f in feature_files.split(",") if f.strip()]
+
+    console.print(f"[cyan]Running leakage detection[/cyan] — horizon={horizon}d")
+
+    try:
+        from aurora.validation.leakage_detector import FeatureLeakageDetector
+
+        detector = FeatureLeakageDetector(files_to_scan=files)
+        static_findings = detector.scan_all_files()
+
+        runtime_findings: list[Any] = []
+        if feature_df is not None and label_series is not None:
+            runtime_findings = detector.test_feature_independence(
+                feature_df, label_series, horizon
+            )
+
+        report = detector.generate_report(static_findings, runtime_findings)
+
+    except Exception as exc:
+        console.print(f"[red]Leakage detection failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    verdict = report.verdict
+    console.print(f"\n[bold]Leakage Detection Result:[/bold] {verdict}")
+    table = Table(show_header=True)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="white")
+    table.add_row("Verdict", verdict)
+    table.add_row("Critical", str(report.critical_count))
+    table.add_row("Warnings", str(report.warning_count))
+    table.add_row("Info", str(report.info_count))
+    if runtime_findings:
+        flagged = sum(1 for f in runtime_findings if f.flagged)
+        table.add_row("Features Flagged", str(flagged))
+    console.print(table)
+
+    if report.static_findings:
+        console.print("\n[bold]Static Analysis Findings:[/bold]")
+        for finding in report.static_findings:
+            color = "red" if finding.severity == "CRITICAL" else "yellow"
+            console.print(f"  [{color}]{finding.severity}[/{color}] {finding.file}:{finding.line}")
+            console.print(f"    {finding.description}")
+            console.print(f"    Fix: {finding.suggested_fix}")
+
+    if runtime_findings:
+        console.print("\n[bold]Runtime Correlation Findings:[/bold]")
+        for finding in runtime_findings:
+            if finding.flagged:
+                console.print(
+                    f"  [red]CRITICAL[/red] {finding.feature}: {finding.flag_reason}"
+                )
+            else:
+                console.print(f"  [green]OK[/green] {finding.feature}")
+
+    if report.recommended_actions:
+        console.print("\n[bold]Recommended Actions:[/bold]")
+        for action in report.recommended_actions:
+            console.print(f"  - {action}")
+
+    if output_path is not None:
+        try:
+            import json
+            output_file = Path(output_path)
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            with output_file.open("w") as f:
+                json.dump(report.to_dict(), f, indent=2, default=str)
+            console.print(f"[green]Leakage report saved:[/green] {output_path}")
+        except Exception as exc:
+            console.print(f"[red]Failed to save report:[/red] {exc}")
+
+    console.print(f"\n[dim]{report.disclaimer}[/dim]")
+
+    if verdict == "COMPROMISED":
         raise typer.Exit(1)
 
 
