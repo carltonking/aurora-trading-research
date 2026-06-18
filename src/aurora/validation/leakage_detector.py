@@ -221,7 +221,13 @@ class FeatureLeakageDetector:
             correlations: dict[int, float] = {}
             p_values: dict[int, float] = {}
 
-            for h in range(1, max_extended_horizon + 1):
+            # Start at lag 0 (same bar). A feature that is statistically tied to
+            # the *contemporaneous* forward-looking label is using information
+            # that would not be available at decision time — classic same-bar
+            # label contamination. The previous implementation started at lag 1
+            # and only inspected lags strictly beyond the horizon, so same-bar
+            # and at-horizon-boundary leakage was never flagged.
+            for h in range(0, max_extended_horizon + 1):
                 feat_shifted = feat_clean[:-h] if h > 0 else feat_clean
                 label_future = label_clean[h:] if h > 0 else label_clean
 
@@ -241,28 +247,46 @@ class FeatureLeakageDetector:
                 abs(correlations.get(h, 0.0))
                 for h in range(horizon_days + 1, max_extended_horizon + 1)
             ]
-            beyond_horizon_pvals = [
-                p_values.get(h, 1.0)
-                for h in range(horizon_days + 1, max_extended_horizon + 1)
-            ]
             max_abs_corr_beyond = max(beyond_horizon_corrs) if beyond_horizon_corrs else 0.0
 
             flagged = False
             flag_reason = ""
             severity = "INFO"
 
-            for h in range(horizon_days + 1, max_extended_horizon + 1):
-                p_val = p_values.get(h, 1.0)
-                if p_val < adjusted_threshold:
+            # A genuine predictor's correlation with a forward label should DECAY
+            # by the time it reaches the intended horizon. We therefore flag
+            # significant high correlation in TWO regimes:
+            #   (a) within-horizon / at the boundary (lag 0 .. horizon): the
+            #       feature appears to already contain the label's information
+            #       (same-bar contamination or a label-leaking transform); and
+            #   (b) beyond the horizon (lag horizon+1 .. max): correlation that
+            #       persists past the prediction horizon also indicates leakage.
+            within_lags = range(0, horizon_days + 1)
+            beyond_lags = range(horizon_days + 1, max_extended_horizon + 1)
+
+            for regime, lags in (("within-horizon", within_lags), ("beyond-horizon", beyond_lags)):
+                for h in lags:
+                    p_val = p_values.get(h, 1.0)
                     corr_val = correlations.get(h, 0.0)
-                    if abs(corr_val) > self.correlation_threshold:
+                    if p_val < adjusted_threshold and abs(corr_val) > self.correlation_threshold:
                         flagged = True
+                        if h == 0:
+                            location = "at lag 0 (same-bar contamination)"
+                        elif regime == "within-horizon":
+                            location = (
+                                f"at lag {h} within intended horizon {horizon_days} "
+                                "(feature already contains label information)"
+                            )
+                        else:
+                            location = f"at lag {h} beyond intended horizon {horizon_days}"
                         flag_reason = (
                             f"Significant correlation ({corr_val:.3f}, p={p_val:.4f}) "
-                            f"at lag {h} beyond intended horizon {horizon_days}"
+                            f"{location}"
                         )
                         severity = "CRITICAL"
                         break
+                if flagged:
+                    break
 
             results.append(
                 FeatureLeakageResult(
@@ -397,7 +421,7 @@ class _LeakageASTVisitor(ast.NodeVisitor):
         if name in ("rolling", "Rolling"):
             pass
 
-        if name in ("fit_transform", "fit", "StandardScaler", "MinMaxScaler"):
+        if name in ("fit_transform", "StandardScaler", "MinMaxScaler"):
             self.findings.append(
                 LeakageFlag(
                     severity="CRITICAL",
@@ -416,27 +440,45 @@ class _LeakageASTVisitor(ast.NodeVisitor):
                 )
             )
 
-        if name in ("merge", "join", "concat", "pd.merge", "pd.join", "pd.concat"):
-            self.findings.append(
-                LeakageFlag(
-                    severity="WARNING",
-                    feature_name=name,
-                    file=self.filepath,
-                    line=node.lineno or None,
-                    code=name,
-                    description=(
-                        f"{name} operation detected. Merging feature and label DataFrames "
-                        "before temporal split risks incorporating future information."
-                    ),
-                    suggested_fix=(
-                        "Perform all merges/joins before temporal splitting. "
-                        "After splitting, features and labels should only be sliced independently."
-                    ),
+        # Merge/join/concat are everyday DataFrame operations; flagging every
+        # one drowns real findings in noise. Only flag a time-axis concat that
+        # could interleave future rows: pd.concat(..., axis=0) (the default).
+        # Plain column joins/merges and axis=1 concats do not move data across
+        # the time axis, so they are not reported.
+        if name == "concat":
+            axis_is_time = True  # default axis=0 stacks rows along the time axis
+            for kw in node.keywords:
+                if kw.arg == "axis":
+                    if isinstance(kw.value, ast.Constant) and kw.value.value in (1, "columns"):
+                        axis_is_time = False
+            if axis_is_time:
+                self.findings.append(
+                    LeakageFlag(
+                        severity="INFO",
+                        feature_name=name,
+                        file=self.filepath,
+                        line=node.lineno or None,
+                        code=f"{name}(axis=0)",
+                        description=(
+                            "pd.concat along the time axis (axis=0) detected. If this "
+                            "stitches rows together, ensure it happens before the "
+                            "temporal split so future rows cannot leak into training."
+                        ),
+                        suggested_fix=(
+                            "Concatenate along the time axis only before temporal "
+                            "splitting; slice features and labels independently after."
+                        ),
+                    )
                 )
-            )
 
-        if name in ("mean", "std", "min", "max", "sum"):
-            if len(node.args) == 0:
+        # Bare reductions (mean/std/min/max/sum) are only a leak when they
+        # collapse the TIME axis of a pandas object without a rolling/expanding/
+        # ewm window or a prior shift. Calling such a reduction on the result of
+        # .rolling()/.expanding()/.ewm()/.groupby() (or with an explicit
+        # axis/window argument) is safe and must NOT be flagged. This removes
+        # the previous blanket false positives on `df['x'].rolling(20).mean()`.
+        if name in ("mean", "std", "min", "max", "sum") and not node.args:
+            if self._is_time_axis_reduction(node):
                 self.findings.append(
                     LeakageFlag(
                         severity="WARNING",
@@ -445,18 +487,61 @@ class _LeakageASTVisitor(ast.NodeVisitor):
                         line=node.lineno or None,
                         code=f"{name}()",
                         description=(
-                            f"Global {name}() called without explicit window. "
-                            "This computes stats across the entire dataset, which may "
-                            "include future data relative to any specific prediction point."
+                            f"Global {name}() over the full series without a rolling/"
+                            "expanding window. This computes a statistic across the "
+                            "entire dataset, including data that is in the future "
+                            "relative to a given prediction point."
                         ),
                         suggested_fix=(
-                            f"Use rolling().{name}() with an explicit lookback window. "
-                            "Ensure the window only includes past data."
+                            f"Use rolling(...).{name}() or expanding().{name}() with an "
+                            "explicit lookback window so only past data is used."
                         ),
                     )
                 )
 
         self.generic_visit(node)
+
+    _SAFE_WINDOW_METHODS = frozenset(
+        {"rolling", "expanding", "ewm", "groupby", "resample", "shift"}
+    )
+
+    def _is_time_axis_reduction(self, node: ast.Call) -> bool:
+        """Return True only for a bare reduction that collapses the time axis.
+
+        Safe (returns False) when:
+          * the reduction has an explicit ``axis`` keyword (caller is explicit),
+          * it is chained off a windowing/grouping method
+            (rolling/expanding/ewm/groupby/resample) or a prior ``shift``, or
+          * the receiver is not an attribute access (e.g. a Python builtin
+            ``sum(...)`` on a list, not a pandas reduction).
+        """
+        # Explicit axis keyword => the author is being deliberate; don't flag.
+        for kw in node.keywords:
+            if kw.arg == "axis":
+                return False
+
+        func = node.func
+        if not isinstance(func, ast.Attribute):
+            return False  # not obj.mean()-style; likely builtin or unrelated
+
+        # Walk UP the receiver chain looking for a windowing/grouping call such
+        # as rolling/expanding/ewm/groupby/resample/shift. Column selection and
+        # attribute access between the window and the reduction are transparent,
+        # e.g. ``df.groupby('sym')['close'].max()`` is safe even though the
+        # immediate receiver of ``.max()`` is a subscript, not the call.
+        receiver: ast.AST | None = func.value
+        while receiver is not None:
+            if isinstance(receiver, ast.Call):
+                if self._get_name(receiver.func) in self._SAFE_WINDOW_METHODS:
+                    return False
+                receiver = receiver.func
+            elif isinstance(receiver, ast.Attribute):
+                receiver = receiver.value
+            elif isinstance(receiver, ast.Subscript):
+                receiver = receiver.value
+            else:
+                break
+        return True
 
     def visit_Assign(self, node: ast.Assign) -> None:
         for target in node.targets:

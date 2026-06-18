@@ -120,7 +120,9 @@ from aurora.security.sandbox import (
     SandboxViolationError,
 )
 from aurora.deployment.checklist import DeploymentChecklist, MANDATORY_DISCLAIMER
-from aurora.tui.app import check_textual, launch_tui
+# NOTE: aurora.tui.app is imported lazily inside the `tui start` command. The TUI
+# depends on the optional `textual` package; importing it at module load broke
+# the ENTIRE CLI on a default install where textual is absent.
 from aurora.validation.exceptions import AuroraValidationError
 from aurora.validation.overfitting import diagnose_backtest_overfitting
 from aurora.validation.report import (
@@ -4349,6 +4351,15 @@ def tui_start(
 
     This command is research-only. No live trading, no broker calls.
     """
+    # Import the TUI lazily: it depends on the optional `textual` package, and a
+    # top-level import would break the whole CLI on a default install.
+    try:
+        from aurora.tui.app import check_textual, launch_tui
+    except ImportError:
+        console.print("[red]Error:[/red] Textual is not installed.")
+        console.print("Install with: pip install .[tui]")
+        raise typer.Exit(code=1)
+
     if not check_textual():
         console.print("[red]Error:[/red] Textual is not installed.")
         console.print("Install with: pip install .[tui]")

@@ -128,41 +128,116 @@ def plot_equity_curves(
     }
 
 
+# Euler-Mascheroni constant, used in the expected-maximum-Sharpe benchmark.
+_EULER_MASCHERONI = 0.5772156649015329
+
+
+def expected_max_sharpe(n_trials: int, sharpe_std: float) -> float:
+    """Expected maximum Sharpe ratio under the null hypothesis of zero edge.
+
+    This is the SR0 benchmark from López de Prado (2014), "The Deflated Sharpe
+    Ratio". Given ``n_trials`` independent strategy configurations whose Sharpe
+    estimates are drawn from a distribution with standard deviation
+    ``sharpe_std``, the expected maximum of those estimates (under a null of no
+    skill) is::
+
+        SR0 = sharpe_std * [ (1 - gamma) * Z(1 - 1/N)
+                             + gamma     * Z(1 - 1/(N*e)) ]
+
+    where ``gamma`` is the Euler-Mascheroni constant, ``Z`` is the inverse
+    standard-normal CDF (``norm.ppf``), ``N`` is the number of trials, and ``e``
+    is Euler's number. SR0 grows with the number of trials: the more
+    configurations you search over, the higher a Sharpe you expect to find by
+    luck alone, and the higher the bar a genuine strategy must clear.
+
+    Args:
+        n_trials: Number of strategy configurations / paths tested.
+        sharpe_std: Standard deviation of the trial Sharpe estimates.
+
+    Returns:
+        The expected-maximum Sharpe benchmark SR0 (>= 0).
+    """
+    from scipy import stats
+
+    n = max(int(n_trials), 1)
+    if sharpe_std <= 0.0 or n <= 1:
+        return 0.0
+
+    gamma = _EULER_MASCHERONI
+    # Z(1 - 1/N): the expected location of the max of N standard normals.
+    z1 = stats.norm.ppf(1.0 - 1.0 / n)
+    # Z(1 - 1/(N*e)): second-order correction term.
+    z2 = stats.norm.ppf(1.0 - 1.0 / (n * math.e))
+    sr0 = sharpe_std * ((1.0 - gamma) * z1 + gamma * z2)
+    return float(max(0.0, sr0))
+
+
 def deflated_sharpe_ratio(
     observed_sharpe: float,
     n_paths: int,
     sharpe_std: float = 0.0,
     skewness: float = 0.0,
     kurtosis: float = 3.0,
+    n_observations: int = 252,
 ) -> float:
-    """Compute Deflated Sharpe Ratio for CPCV results.
+    """Compute the Deflated Sharpe Ratio (DSR) — López de Prado (2014).
 
-    Adjusts the observed Sharpe downward based on the number of trials
-    (paths) tested, directly penalizing overfitting.
+    The DSR is the probability that the observed Sharpe ratio exceeds the
+    expected-maximum Sharpe achievable by chance, after accounting for the
+    number of trials and the non-normality (skew, kurtosis) of the returns. It
+    is the canonical implementation; ``cpcv.deflated_sharpe_ratio`` delegates
+    here.
 
-    Implements the DSR formula from López de Prado:
-    DSR = max(0, (SR - SR_benchmark) * sqrt(1 - ln(N)/N) * skew_adj)
+    Formula::
+
+        SR0 = expected_max_sharpe(N, sigma_SR)
+        DSR = Phi( ((SR - SR0) * sqrt(T - 1))
+                   / sqrt(1 - skew*SR + ((kurt - 1)/4) * SR^2) )
+
+    where ``Phi`` is the standard-normal CDF (``norm.cdf``), ``T`` is the number
+    of return observations, ``skew``/``kurt`` are the skewness and kurtosis of
+    the return series, ``SR`` is the observed (non-annualized, per-observation)
+    Sharpe, and ``SR0`` is the expected-maximum-Sharpe benchmark under the null.
+
+    Properties guaranteed by this implementation:
+      * DSR in [0, 1] (it is a probability).
+      * DSR decreases as the number of trials N increases (multiple-testing
+        penalty: SR0 rises with N, shrinking the numerator).
+      * DSR increases with a higher observed Sharpe.
 
     Args:
-        observed_sharpe: Sharpe ratio from the full backtest.
-        n_paths: Number of independent paths tested.
-        sharpe_std: Standard deviation of Sharpe across paths.
-        skewness: Estimated skewness of path Sharpe distribution.
-        kurtosis: Kurtosis of Sharpe distribution.
+        observed_sharpe: Observed Sharpe ratio (same scale as ``sharpe_std``).
+        n_paths: Number of trials / CPCV paths tested.
+        sharpe_std: Standard deviation of the trial Sharpe estimates.
+        skewness: Skewness of the return series (3rd standardized moment).
+        kurtosis: Kurtosis of the return series (4th standardized moment; 3.0
+            for a normal distribution).
+        n_observations: Number of return observations T behind the Sharpe.
 
     Returns:
-        Deflated Sharpe Ratio (adjusted downward for multiple testing).
+        Deflated Sharpe Ratio as a probability in [0, 1].
     """
-    if observed_sharpe <= 0:
+    from scipy import stats
+
+    t = int(n_observations)
+    if t < 2:
         return 0.0
-    if n_paths <= 1:
-        return max(0.0, observed_sharpe)
 
-    n_float = float(n_paths)
-    trials_adjustment = math.sqrt(max(0.0, 1.0 - 1.0 / n_float))
+    sr = float(observed_sharpe)
+    sr0 = expected_max_sharpe(n_paths, sharpe_std)
 
-    dsr = observed_sharpe * trials_adjustment
-    return max(0.0, dsr)
+    # Variance scaling of the Sharpe estimator under non-normal returns
+    # (Mertens / López de Prado). For normal returns (skew=0, kurt=3) this
+    # reduces to 1, recovering the classic sqrt(T-1) scaling.
+    variance_term = 1.0 - skewness * sr + ((kurtosis - 1.0) / 4.0) * sr * sr
+    if variance_term <= 0.0:
+        # Degenerate moment estimates — fall back to the normal-returns case
+        # rather than producing a NaN.
+        variance_term = 1.0
+
+    z = (sr - sr0) * math.sqrt(t - 1) / math.sqrt(variance_term)
+    dsr = stats.norm.cdf(z)
+    return float(dsr)
 
 
 def strategy_selection_bias_score(

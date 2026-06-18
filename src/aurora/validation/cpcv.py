@@ -20,6 +20,10 @@ from typing import Any, Callable, Iterator
 import numpy as np
 import pandas as pd
 
+from aurora.validation.path_analysis import (
+    deflated_sharpe_ratio as _canonical_deflated_sharpe_ratio,
+)
+
 
 MANDATORY_DISCLAIMER = (
     "Combinatorial Purged Cross-Validation is a research tool for estimating "
@@ -167,37 +171,60 @@ def generate_cpcv_splits(
     for test_group_indices in combinations(range(config.n_splits), config.n_test_splits):
         test_indices_raw: set[int] = set()
         for gi in test_group_indices:
-            test_indices_raw.update(groups[gi])
+            test_indices_raw.update(groups[gi].tolist())
 
-        test_indices_raw = set(test_indices_raw)
         train_indices_raw: set[int] = set()
         for gi in range(config.n_splits):
             if gi not in test_group_indices:
-                train_indices_raw.update(groups[gi])
+                train_indices_raw.update(groups[gi].tolist())
 
         test_sorted = sorted(test_indices_raw)
         test_dates = timestamps[test_sorted]
         test_start = pd.Timestamp(test_dates[0])
         test_end = pd.Timestamp(test_dates[-1])
 
-        purge_start = test_start
-        purge_end = test_start + pd.Timedelta(days=purge_buffer)
+        # The test set can span several non-contiguous groups (e.g. test {0,2}
+        # leaves train {1} in the middle). Purge/embargo must be applied around
+        # EACH contiguous test block independently, not around the overall
+        # [min,max] envelope — otherwise legitimate training data between test
+        # blocks is silently swallowed.
+        test_blocks = [
+            (pd.Timestamp(timestamps[groups[gi][0]]), pd.Timestamp(timestamps[groups[gi][-1]]))
+            for gi in test_group_indices
+        ]
 
-        embargo_start = test_end
-        embargo_end = test_end + pd.Timedelta(days=embargo_buffer)
+        def _is_purged_or_embargoed(ts: pd.Timestamp) -> bool:
+            for block_start, block_end in test_blocks:
+                # Purge: a training observation labelled at time ``ts`` carries
+                # information over its label window [ts, ts + purge_days]. Remove
+                # it if that window overlaps the test block on EITHER side — i.e.
+                # the training label ends inside/after the test block starts AND
+                # the training observation begins at/before the test block ends.
+                label_end = ts + pd.Timedelta(days=purge_buffer)
+                overlaps_test = (label_end >= block_start) and (ts <= block_end)
+                if overlaps_test:
+                    return True
+                # Embargo: also drop training observations that fall within the
+                # embargo window immediately AFTER the test block (serial
+                # correlation leaks forward from test into subsequent training).
+                if block_end < ts <= block_end + pd.Timedelta(days=embargo_buffer):
+                    return True
+            return False
 
         train_indices: list[int] = []
-        train_dates = timestamps[list(train_indices_raw)]
-        train_start = pd.Timestamp(train_dates.min()) if len(train_dates) > 0 else None
-        train_end = pd.Timestamp(train_dates.max()) if len(train_dates) > 0 else None
-
         for idx in sorted(train_indices_raw):
-            ts = timestamps[idx]
-            if ts < purge_start or (purge_start <= ts <= purge_end):
-                continue
-            if embargo_start <= ts <= embargo_end:
+            ts = pd.Timestamp(timestamps[idx])
+            if _is_purged_or_embargoed(ts):
                 continue
             train_indices.append(idx)
+
+        if train_indices:
+            kept_dates = timestamps[train_indices]
+            train_start = pd.Timestamp(kept_dates.min())
+            train_end = pd.Timestamp(kept_dates.max())
+        else:
+            train_start = None
+            train_end = None
 
         test_indices_final = np.array(sorted(test_sorted), dtype=np.intp)
 
@@ -272,67 +299,77 @@ def compute_cpcv_paths(
             )
             continue
 
-        equity = [config.starting_cash]
-        position = 0
+        # Mark-to-market accounting. We track cash and a share ``position`` and
+        # append exactly ONE equity point per bar (plus the starting point), so
+        # the equity curve is always aligned with the test bars. The previous
+        # implementation mutated equity[-1] in place on buys while appending on
+        # sells/holds, producing a misaligned, double-counted return series fed
+        # to the Sharpe calculation.
+        cash = float(config.starting_cash)
+        position = 0  # shares held
+        equity = [cash]
         trades = 0
         wins = 0
         gross_profit = 0.0
         gross_loss = 0.0
-        peak = config.starting_cash
+        peak = cash
         max_dd = 0.0
 
         signals = test_df[config.signal_col].values
         closes = test_df[config.price_col].values
-        timestamps_test = test_df[config.timestamp_col].values
 
-        entry_price = 0.0
-        entry_side = 0
+        entry_cost_basis = 0.0  # cash spent to open the current position
 
         for i in range(len(test_df)):
             sig = signals[i]
-            price = closes[i]
-            ts = timestamps_test[i]
+            price = float(closes[i])
 
             if sig > 0 and position == 0:
-                position = int(config.starting_cash * config.position_size_pct / price)
-                if position < 1:
-                    position = 1
-                entry_price = price
-                entry_side = 1
-                cost = position * price * config.commission_per_trade
-                slip = position * price * config.slippage_bps / 10000.0
-                equity[-1] -= cost + slip
+                shares = int(config.starting_cash * config.position_size_pct / price)
+                if shares < 1:
+                    shares = 1
+                gross = shares * price
+                cost = gross * config.commission_per_trade
+                slip = gross * config.slippage_bps / 10000.0
+                cash -= gross + cost + slip
+                entry_cost_basis = gross + cost + slip
+                position = shares
                 trades += 1
             elif sig < 0 and position > 0:
                 proceeds = position * price
                 cost = proceeds * config.commission_per_trade
                 slip = proceeds * config.slippage_bps / 10000.0
-                pnl = proceeds - entry_price * position - cost - slip
-                equity.append(equity[-1] + pnl)
+                net_proceeds = proceeds - cost - slip
+                cash += net_proceeds
+                pnl = net_proceeds - entry_cost_basis
                 if pnl > 0:
                     wins += 1
                     gross_profit += pnl
                 else:
                     gross_loss += abs(pnl)
                 position = 0
+                entry_cost_basis = 0.0
                 trades += 1
-            else:
-                if len(equity) > 1:
-                    equity.append(equity[-1])
-                else:
-                    equity.append(equity[-1])
 
-            current_equity = equity[-1]
+            # Mark to market: equity = cash + value of any open position.
+            current_equity = cash + position * price
+            equity.append(current_equity)
+
             if current_equity > peak:
                 peak = current_equity
-            dd = (peak - current_equity) / peak
+            dd = (peak - current_equity) / peak if peak > 0 else 0.0
             if dd > max_dd:
                 max_dd = dd
 
+        # Close any open position at the final bar for a count, but the
+        # mark-to-market equity already reflects its value, so do not append a
+        # spurious extra equity point here.
         if position > 0:
-            last_price = closes[-1]
-            pnl = position * (last_price - entry_price) - position * last_price * config.commission_per_trade
-            equity.append(equity[-1] + pnl)
+            last_price = float(closes[-1])
+            proceeds = position * last_price
+            cost = proceeds * config.commission_per_trade
+            net_proceeds = proceeds - cost
+            pnl = net_proceeds - entry_cost_basis
             if pnl > 0:
                 wins += 1
                 gross_profit += pnl
@@ -344,7 +381,10 @@ def compute_cpcv_paths(
             equity = [config.starting_cash, config.starting_cash]
 
         equity_arr = np.array(equity)
-        returns = np.diff(equity_arr) / equity_arr[:-1]
+        base = equity_arr[:-1]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            returns = np.diff(equity_arr) / np.where(base == 0.0, np.nan, base)
+        returns = returns[np.isfinite(returns)]
         vol = np.std(returns) if len(returns) > 1 else 1e-10
         mean_ret = np.mean(returns) if len(returns) > 1 else 0.0
         sharpe = (mean_ret / vol) * np.sqrt(252) if vol > 1e-10 else 0.0
@@ -381,19 +421,122 @@ def compute_cpcv_paths(
     return results
 
 
+def probability_of_backtest_overfitting(
+    performance_matrix: np.ndarray,
+    n_blocks: int = 10,
+) -> float | None:
+    """Probability of Backtest Overfitting (PBO) via CSCV.
+
+    Implements Bailey & López de Prado's Combinatorially Symmetric
+    Cross-Validation (CSCV). PBO is only well-defined when there is a *grid of
+    candidate configurations* to choose among — it measures the probability
+    that the configuration selected as best in-sample (IS) ranks below the
+    median out-of-sample (OOS). With a single strategy there is nothing to
+    select between, so this returns ``None``.
+
+    Algorithm:
+      1. Partition the T observations (rows) into ``S`` even, contiguous
+         submatrices (blocks).
+      2. For each of the C(S, S/2) ways to choose S/2 blocks as IS (the
+         complement is OOS), evaluate every configuration's IS and OOS Sharpe.
+      3. Pick n* = argmax of IS Sharpe. Compute its OOS rank, normalized to
+         omega_bar in (0, 1), and the logit lambda = ln(omega_bar / (1 -
+         omega_bar)).
+      4. PBO = fraction of combinations with lambda <= 0 (i.e. the IS-best
+         config landed at or below the OOS median).
+
+    Args:
+        performance_matrix: Array of shape (T, C) — per-observation returns for
+            each of C candidate configurations. Requires C >= 2.
+        n_blocks: Number of even submatrices S (must be even and >= 2).
+
+    Returns:
+        PBO in [0, 1], or ``None`` if PBO is not well-defined (fewer than two
+        configurations, or insufficient data to form the blocks).
+    """
+    perf = np.asarray(performance_matrix, dtype=float)
+    if perf.ndim != 2:
+        return None
+    n_obs, n_configs = perf.shape
+    # PBO requires a choice among multiple configurations.
+    if n_configs < 2:
+        return None
+
+    s = int(n_blocks)
+    if s % 2 != 0:
+        s -= 1
+    if s < 2:
+        return None
+    # Need at least a couple of observations per block.
+    if n_obs < s * 2:
+        s = max(2, (n_obs // 2) * 2)
+        if s < 2 or n_obs < s:
+            return None
+
+    blocks = np.array_split(np.arange(n_obs), s)
+    block_ids = list(range(s))
+
+    def _sharpe(matrix: np.ndarray) -> np.ndarray:
+        mean = matrix.mean(axis=0)
+        std = matrix.std(axis=0, ddof=1) if matrix.shape[0] > 1 else np.zeros(matrix.shape[1])
+        out = np.zeros_like(mean)
+        nz = std > 1e-12
+        out[nz] = mean[nz] / std[nz]
+        return out
+
+    lambdas: list[float] = []
+    for is_combo in combinations(block_ids, s // 2):
+        is_set = set(is_combo)
+        is_rows = np.concatenate([blocks[b] for b in block_ids if b in is_set])
+        oos_rows = np.concatenate([blocks[b] for b in block_ids if b not in is_set])
+        if len(is_rows) < 2 or len(oos_rows) < 2:
+            continue
+
+        is_sharpe = _sharpe(perf[is_rows, :])
+        oos_sharpe = _sharpe(perf[oos_rows, :])
+
+        best_is = int(np.argmax(is_sharpe))
+        # OOS rank of the IS-best config among all configs (1 = worst).
+        order = np.argsort(oos_sharpe, kind="mergesort")
+        ranks = np.empty(n_configs, dtype=float)
+        ranks[order] = np.arange(1, n_configs + 1)
+        # Normalize relative rank into (0, 1), avoiding the open endpoints.
+        omega_bar = ranks[best_is] / (n_configs + 1)
+        omega_bar = min(max(omega_bar, 1e-9), 1.0 - 1e-9)
+        lam = math.log(omega_bar / (1.0 - omega_bar))
+        lambdas.append(lam)
+
+    if not lambdas:
+        return None
+
+    n_overfit = sum(1 for lam in lambdas if lam <= 0.0)
+    return float(n_overfit / len(lambdas))
+
+
 def summarize_cpcv_paths(
     paths: list[BacktestPathResult],
     n_paths_tested: int,
     observed_sharpe: float,
     sharpe_std: float,
+    return_skew: float = 0.0,
+    return_kurtosis: float = 3.0,
+    n_observations: int = 252,
+    pbo: float | None = None,
 ) -> dict[str, Any]:
     """Summarize CPCV path results.
 
     Args:
         paths: List of BacktestPathResult objects.
-        n_paths_tested: Number of paths tested.
+        n_paths_tested: Number of paths tested (= number of trials for DSR).
         observed_sharpe: The Sharpe ratio observed in the full backtest.
-        sharpe_std: Standard deviation of Sharpe across paths.
+        sharpe_std: Standard deviation of Sharpe across paths (the trial-Sharpe
+            dispersion that feeds the expected-maximum-Sharpe benchmark).
+        return_skew: Skewness of the pooled OOS return series (for DSR).
+        return_kurtosis: Kurtosis of the pooled OOS return series (for DSR).
+        n_observations: Number of return observations T behind the Sharpe.
+        pbo: Probability of Backtest Overfitting from CSCV, or ``None`` when not
+            well-defined (single configuration). Reported as
+            ``backtest_overfitting_probability``.
 
     Returns:
         Dictionary with summary statistics.
@@ -406,7 +549,11 @@ def summarize_cpcv_paths(
             "worst_path_sharpe": 0.0,
             "best_path_sharpe": 0.0,
             "pct_profitable": 0.0,
-            "backtest_overfitting_probability": 1.0,
+            "backtest_overfitting_probability": pbo,
+            "pbo_note": (
+                "PBO (CSCV) requires a grid of candidate configurations; it is "
+                "not well-defined for a single strategy and is reported as null."
+            ),
             "deflated_sharpe_ratio": 0.0,
         }
 
@@ -420,11 +567,25 @@ def summarize_cpcv_paths(
     n_profitable = sum(1 for p in paths if p.total_return > 0)
     pct_profitable = n_profitable / len(paths) if paths else 0.0
 
-    underperforming = sum(1 for s in sharpes if s < median_sharpe)
-    bop_probability = underperforming / len(paths) if paths else 1.0
+    # DSR uses the dispersion of the trial (path) Sharpe estimates as sigma_SR;
+    # fall back to the precomputed sharpe_std if needed.
+    sigma_sr = std_sharpe if std_sharpe > 0.0 else sharpe_std
+    sr_for_dsr = observed_sharpe if observed_sharpe != 0.0 else mean_sharpe
+    deflated_sr = deflated_sharpe_ratio(
+        sr_for_dsr,
+        n_paths_tested,
+        sharpe_std=sigma_sr,
+        skewness=return_skew,
+        kurtosis=return_kurtosis,
+        n_observations=n_observations,
+    )
 
-    sr_with_skew = observed_sharpe if observed_sharpe != 0.0 else mean_sharpe
-    deflated_sr = deflated_sharpe_ratio(sr_with_skew, n_paths_tested, sharpe_std)
+    pbo_note = (
+        "PBO (CSCV) requires a grid of candidate configurations; it is not "
+        "well-defined for a single strategy and is reported as null."
+        if pbo is None
+        else "PBO computed via Combinatorially Symmetric Cross-Validation (CSCV)."
+    )
 
     return {
         "n_paths_tested": n_paths_tested,
@@ -434,7 +595,8 @@ def summarize_cpcv_paths(
         "best_path_sharpe": best_sharpe,
         "median_path_sharpe": median_sharpe,
         "pct_profitable": pct_profitable,
-        "backtest_overfitting_probability": bop_probability,
+        "backtest_overfitting_probability": pbo,
+        "pbo_note": pbo_note,
         "deflated_sharpe_ratio": deflated_sr,
         "disclaimer": MANDATORY_DISCLAIMER,
     }
@@ -446,35 +608,38 @@ def deflated_sharpe_ratio(
     sharpe_std: float = 0.0,
     skewness: float = 0.0,
     kurtosis: float = 3.0,
+    n_observations: int = 252,
 ) -> float:
-    """Compute the Deflated Sharpe Ratio (DSR).
+    """Compute the Deflated Sharpe Ratio (DSR) — López de Prado (2014).
 
-    Adjusts observed Sharpe downward based on the number of independent paths
-    tested, penalizing strategies that were selected by picking the best of
-    many backtest paths.
-
-    Uses the trial-count penalty: DSR = SR * sqrt(1 - 1/N)
+    This is a thin wrapper around the canonical implementation in
+    ``aurora.validation.path_analysis.deflated_sharpe_ratio`` so that CPCV and
+    path-analysis callers share one, correct definition. The DSR is the
+    probability (in [0, 1]) that the observed Sharpe exceeds the
+    expected-maximum Sharpe achievable by chance across ``n_paths`` trials,
+    adjusted for the skew and kurtosis of the return series. It decreases as the
+    number of trials grows (multiple-testing penalty) and increases with a
+    higher observed Sharpe. See the canonical docstring for the full formula.
 
     Args:
-        observed_sharpe: Sharpe ratio from the full backtest.
-        n_paths: Number of independent paths tested.
-        sharpe_std: Standard deviation of Sharpe across paths (unused, for API compat).
-        skewness: Estimated skewness (unused, for API compat).
-        kurtosis: Kurtosis (unused, for API compat).
+        observed_sharpe: Observed Sharpe ratio.
+        n_paths: Number of trials / CPCV paths tested.
+        sharpe_std: Standard deviation of the trial Sharpe estimates.
+        skewness: Skewness of the return series.
+        kurtosis: Kurtosis of the return series (3.0 for normal).
+        n_observations: Number of return observations T.
 
     Returns:
-        Deflated Sharpe Ratio (adjusted downward for multiple testing).
+        Deflated Sharpe Ratio as a probability in [0, 1].
     """
-    if observed_sharpe <= 0:
-        return 0.0
-    if n_paths <= 1:
-        return max(0.0, observed_sharpe)
-
-    n_float = float(n_paths)
-    trials_factor = math.sqrt(max(0.0, 1.0 - 1.0 / n_float))
-
-    dsr = observed_sharpe * trials_factor
-    return max(0.0, dsr)
+    return _canonical_deflated_sharpe_ratio(
+        observed_sharpe=observed_sharpe,
+        n_paths=n_paths,
+        sharpe_std=sharpe_std,
+        skewness=skewness,
+        kurtosis=kurtosis,
+        n_observations=n_observations,
+    )
 
 
 def strategy_selection_bias_score(
@@ -537,7 +702,47 @@ def run_cpcv_validation(
     sharpes = [p.sharpe_ratio for p in paths]
     sharpe_std = float(np.std(sharpes, ddof=1)) if len(sharpes) > 1 else 0.0
 
-    summary = summarize_cpcv_paths(paths, len(paths), observed_sharpe, sharpe_std)
+    # Pool the per-path return series (from each path's equity curve) so the DSR
+    # can estimate the skew/kurtosis of the return distribution and the number
+    # of observations T. These higher moments are required for a correct DSR;
+    # the old code ignored them.
+    pooled_returns: list[float] = []
+    for p in paths:
+        eq = np.asarray(p.equity_curve, dtype=float)
+        if len(eq) > 1:
+            base = eq[:-1]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                rets = np.diff(eq) / np.where(base == 0.0, np.nan, base)
+            rets = rets[np.isfinite(rets)]
+            pooled_returns.extend(rets.tolist())
+
+    if len(pooled_returns) >= 3:
+        from scipy import stats as _scipy_stats
+
+        ret_arr = np.asarray(pooled_returns, dtype=float)
+        return_skew = float(_scipy_stats.skew(ret_arr))
+        # Pearson kurtosis (fisher=False): 3.0 for a normal distribution, which
+        # is what the DSR variance term expects.
+        return_kurtosis = float(_scipy_stats.kurtosis(ret_arr, fisher=False))
+        n_observations = int(len(ret_arr))
+    else:
+        return_skew = 0.0
+        return_kurtosis = 3.0
+        n_observations = 252
+
+    # PBO via CSCV is undefined for a single strategy configuration (AURORA's
+    # CPCV evaluates one strategy across paths, not a grid). Report it as None
+    # rather than fabricating a meaningless ~0.5.
+    summary = summarize_cpcv_paths(
+        paths,
+        len(paths),
+        observed_sharpe,
+        sharpe_std,
+        return_skew=return_skew,
+        return_kurtosis=return_kurtosis,
+        n_observations=n_observations,
+        pbo=None,
+    )
 
     return CPCVResult(
         config=config,

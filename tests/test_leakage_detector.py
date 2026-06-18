@@ -460,3 +460,150 @@ def test_leakage_detector_no_files() -> None:
 
     assert report.verdict == VERDICT_CLEAN
     assert len(findings) == 0
+
+
+# ---------------------------------------------------------------------------
+# Property tests for the corrected leakage detection: within-horizon runtime
+# contamination is now caught, and the static scanner is context-aware.
+# ---------------------------------------------------------------------------
+
+
+def test_runtime_flags_within_horizon_contamination() -> None:
+    """PROPERTY: a feature that contains the label AT the horizon boundary is
+    flagged. The old detector only inspected lags strictly beyond the horizon,
+    so this same-information leak slipped through entirely.
+    """
+    from aurora.validation.leakage_detector import FeatureLeakageDetector
+
+    np.random.seed(42)
+    n = 200
+    dates = pd.date_range("2020-01-01", periods=n, freq="D")
+    label = pd.Series(np.random.randn(n), index=dates, name="label")
+
+    # feature[i] == label[i + 5]: correlation peaks at lag 5, which equals the
+    # intended horizon (the boundary the old code skipped).
+    leaky = pd.Series(
+        [label.iloc[i + 5] if i + 5 < n else 0.0 for i in range(n)],
+        index=dates,
+        name="leaky_feature",
+    )
+    feature_df = pd.DataFrame({"leaky_feature": leaky})
+
+    detector = FeatureLeakageDetector(p_value_threshold=0.01, bonferroni_correction=False)
+    results = detector.test_feature_independence(feature_df, label, horizon_days=5)
+
+    assert len(results) == 1
+    assert results[0].flagged, "Within-horizon label contamination must be flagged"
+    assert results[0].severity == "CRITICAL"
+
+
+def test_runtime_flags_same_bar_contamination() -> None:
+    """PROPERTY: a feature equal to the contemporaneous label (lag 0) is flagged.
+
+    Same-bar contamination uses information unavailable at decision time. The
+    old detector started at lag 1 and never tested the same bar.
+    """
+    from aurora.validation.leakage_detector import FeatureLeakageDetector
+
+    np.random.seed(7)
+    n = 200
+    dates = pd.date_range("2020-01-01", periods=n, freq="D")
+    label = pd.Series(np.random.randn(n), index=dates, name="label")
+    # feature[i] == label[i] plus tiny noise: strong same-bar correlation.
+    same_bar = label + np.random.randn(n) * 0.01
+    same_bar.name = "same_bar_feature"
+    feature_df = pd.DataFrame({"same_bar_feature": same_bar})
+
+    detector = FeatureLeakageDetector(p_value_threshold=0.01, bonferroni_correction=False)
+    results = detector.test_feature_independence(feature_df, label, horizon_days=5)
+
+    assert results[0].flagged, "Same-bar (lag 0) contamination must be flagged"
+    assert "lag 0" in results[0].flag_reason.lower() or "same-bar" in results[0].flag_reason.lower()
+
+
+def test_runtime_clears_independent_feature_property() -> None:
+    """PROPERTY: a feature independent of the label at every lag stays clean."""
+    from aurora.validation.leakage_detector import FeatureLeakageDetector
+
+    np.random.seed(321)
+    n = 400
+    dates = pd.date_range("2020-01-01", periods=n, freq="D")
+    label = pd.Series(np.random.randn(n), index=dates, name="label")
+    noise = pd.Series(np.random.randn(n), index=dates, name="noise")
+    feature_df = pd.DataFrame({"noise": noise})
+
+    detector = FeatureLeakageDetector(p_value_threshold=0.001)
+    results = detector.test_feature_independence(feature_df, label, horizon_days=5)
+    assert not results[0].flagged, "Independent noise must not be flagged at any lag"
+
+
+def test_static_scanner_no_false_positive_on_rolling_reduction() -> None:
+    """PROPERTY: a windowed reduction (rolling/expanding) is NOT a false positive."""
+    import tempfile
+    from aurora.validation.leakage_detector import FeatureLeakageDetector
+
+    src = (
+        "import pandas as pd\n"
+        "def f(df):\n"
+        "    a = df['close'].shift(1).rolling(20).mean()\n"
+        "    b = df['close'].expanding().std()\n"
+        "    c = df.groupby('sym')['close'].max()\n"
+        "    return a, b, c\n"
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as fh:
+        fh.write(src)
+        temp_path = fh.name
+    try:
+        findings = FeatureLeakageDetector(files_to_scan=[temp_path]).scan_all_files()
+        reduction_flags = [
+            f for f in findings if f.feature_name in ("mean", "std", "min", "max", "sum")
+        ]
+        assert reduction_flags == [], (
+            f"Windowed reductions must not be flagged; got {reduction_flags}"
+        )
+    finally:
+        Path(temp_path).unlink(missing_ok=True)
+
+
+def test_static_scanner_flags_global_reduction_only() -> None:
+    """PROPERTY: a bare global reduction over the full series IS flagged,
+    while merges/joins are no longer noisy false positives.
+    """
+    import tempfile
+    from aurora.validation.leakage_detector import FeatureLeakageDetector
+
+    src = (
+        "import pandas as pd\n"
+        "def f(df, other):\n"
+        "    m = df['close'].mean()\n"               # global reduction -> flag
+        "    j = pd.merge(df, other, on='id')\n"     # merge -> no flag
+        "    k = df.join(other)\n"                    # join -> no flag
+        "    return m, j, k\n"
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as fh:
+        fh.write(src)
+        temp_path = fh.name
+    try:
+        findings = FeatureLeakageDetector(files_to_scan=[temp_path]).scan_all_files()
+        names = [f.feature_name for f in findings]
+        assert "mean" in names, "Global mean() over the full series should be flagged"
+        assert "merge" not in names, "merge should no longer be a false positive"
+        assert "join" not in names, "join should no longer be a false positive"
+    finally:
+        Path(temp_path).unlink(missing_ok=True)
+
+
+def test_cli_imports_without_eager_tui() -> None:
+    """PROPERTY (release blocker): importing the CLI must not eagerly import the
+    optional textual-dependent TUI module.
+    """
+    import sys
+
+    # Importing the CLI app must succeed and must not pull in aurora.tui.app.
+    sys.modules.pop("aurora.tui.app", None)
+    from aurora.cli.app import app  # noqa: F401
+
+    assert "aurora.tui.app" not in sys.modules, (
+        "aurora.tui.app was imported eagerly; the TUI import must be lazy so the "
+        "CLI works without the optional `textual` dependency."
+    )

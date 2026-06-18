@@ -149,40 +149,66 @@ def test_cpcv_invalid_params() -> None:
 
 
 def test_deflated_sharpe_ratio() -> None:
-    """Test Deflated Sharpe Ratio calculation on known inputs."""
+    """Test Deflated Sharpe Ratio (López de Prado 2014) — a probability in [0, 1].
+
+    The DSR is Phi(...), the probability the observed Sharpe exceeds the
+    expected-maximum Sharpe under the null. It is NOT a deflated point estimate
+    of the Sharpe; it lives in [0, 1].
+    """
     from aurora.validation.cpcv import deflated_sharpe_ratio
 
-    dsr = deflated_sharpe_ratio(observed_sharpe=1.5, n_paths=15, sharpe_std=0.5)
-    assert dsr >= 0.0, "DSR should not be negative"
-    assert dsr <= 1.5, "DSR should not exceed observed Sharpe"
-    assert dsr > 0.0, "DSR with positive Sharpe should be positive"
+    # Use a per-period Sharpe regime that keeps the DSR in the interior so the
+    # qualitative properties are observable (not saturated at 0 or 1).
+    dsr = deflated_sharpe_ratio(
+        observed_sharpe=0.3, n_paths=15, sharpe_std=0.1, n_observations=40
+    )
+    assert 0.0 <= dsr <= 1.0, "DSR is a probability and must lie in [0, 1]"
+    assert dsr > 0.0, "DSR with a strong positive Sharpe should be positive"
 
-    dsr_zero = deflated_sharpe_ratio(observed_sharpe=0.0, n_paths=10, sharpe_std=0.5)
-    assert dsr_zero == 0.0, "DSR should be 0 for zero Sharpe"
+    # A higher observed Sharpe yields a higher DSR (more evidence of edge).
+    dsr_low = deflated_sharpe_ratio(
+        observed_sharpe=0.1, n_paths=15, sharpe_std=0.1, n_observations=40
+    )
+    dsr_high = deflated_sharpe_ratio(
+        observed_sharpe=0.5, n_paths=15, sharpe_std=0.1, n_observations=40
+    )
+    assert dsr_low < dsr_high, "DSR must increase with a higher observed Sharpe"
 
-    dsr_neg = deflated_sharpe_ratio(observed_sharpe=-0.5, n_paths=10, sharpe_std=0.5)
-    assert dsr_neg == 0.0, "DSR should be 0 for negative Sharpe"
+    # A Sharpe at or below the expected-max benchmark gives DSR <= 0.5.
+    dsr_zero = deflated_sharpe_ratio(
+        observed_sharpe=0.0, n_paths=10, sharpe_std=0.1, n_observations=40
+    )
+    assert 0.0 <= dsr_zero <= 0.5, "Zero observed Sharpe should not look skillful"
 
-    dsr_single = deflated_sharpe_ratio(observed_sharpe=2.0, n_paths=1, sharpe_std=0.5)
-    assert dsr_single == 2.0, "DSR with single path should equal observed Sharpe"
+    # A negative observed Sharpe is clearly below the null benchmark.
+    dsr_neg = deflated_sharpe_ratio(
+        observed_sharpe=-0.5, n_paths=10, sharpe_std=0.1, n_observations=40
+    )
+    assert dsr_neg < 0.5, "Negative Sharpe should give a low DSR"
 
 
 def test_deflated_sharpe_ratio_penalty() -> None:
-    """Test that DSR penalty increases with more paths (multi-testing correction)."""
+    """DSR must DECREASE as the number of trials grows (multiple-testing penalty).
+
+    This is the corrected property. The previous test asserted the opposite
+    (DSR increasing in N), which is mathematically backwards: more trials means
+    a higher expected-maximum Sharpe under the null, so a fixed observed Sharpe
+    is less impressive and the DSR falls.
+    """
     from aurora.validation.cpcv import deflated_sharpe_ratio
 
-    sr = 2.0
-    dsr_2 = deflated_sharpe_ratio(observed_sharpe=sr, n_paths=2, sharpe_std=0.5)
-    dsr_10 = deflated_sharpe_ratio(observed_sharpe=sr, n_paths=10, sharpe_std=0.5)
-    dsr_100 = deflated_sharpe_ratio(observed_sharpe=sr, n_paths=100, sharpe_std=0.5)
+    sr = 0.3
+    kwargs = dict(observed_sharpe=sr, sharpe_std=0.1, n_observations=40)
+    dsr_2 = deflated_sharpe_ratio(n_paths=2, **kwargs)
+    dsr_10 = deflated_sharpe_ratio(n_paths=10, **kwargs)
+    dsr_100 = deflated_sharpe_ratio(n_paths=100, **kwargs)
 
-    assert dsr_2 < dsr_10 < dsr_100, (
-        "DSR penalty factor (sqrt(1-1/N)) increases with more paths, "
-        "reducing the penalty for larger N"
+    assert dsr_2 > dsr_10 > dsr_100, (
+        "DSR must strictly decrease as the number of trials N increases "
+        "(higher expected-maximum-Sharpe benchmark penalizes the observed SR)"
     )
-    assert dsr_2 > 0.0
-    assert dsr_10 > 0.0
-    assert dsr_100 > 0.0
+    for value in (dsr_2, dsr_10, dsr_100):
+        assert 0.0 <= value <= 1.0, "DSR is a probability and must lie in [0, 1]"
 
 
 def test_strategy_selection_bias_score() -> None:
@@ -393,3 +419,188 @@ def test_path_analysis_deflated_sharpe_ratio() -> None:
     val_pa = pa_dsr(sr, n, std)
 
     assert abs(val_cpcv - val_pa) < 1e-6, "DSR implementations should match"
+
+
+# ---------------------------------------------------------------------------
+# Property-based tests for the corrected López de Prado statistics. These assert
+# MATHEMATICAL PROPERTIES of the formulas, not just structural presence of keys.
+# ---------------------------------------------------------------------------
+
+
+def test_dsr_is_probability_in_unit_interval() -> None:
+    """PROPERTY: DSR is a probability and must always lie in [0, 1]."""
+    from aurora.validation.path_analysis import deflated_sharpe_ratio
+
+    rng = np.random.default_rng(0)
+    for _ in range(200):
+        sr = float(rng.uniform(-1.0, 1.0))
+        n = int(rng.integers(1, 500))
+        sigma = float(rng.uniform(0.0, 0.5))
+        t = int(rng.integers(2, 500))
+        skew = float(rng.uniform(-1.0, 1.0))
+        kurt = float(rng.uniform(1.5, 9.0))
+        dsr = deflated_sharpe_ratio(
+            sr, n, sharpe_std=sigma, skewness=skew, kurtosis=kurt, n_observations=t
+        )
+        assert 0.0 <= dsr <= 1.0, (
+            f"DSR out of [0,1]: {dsr} for sr={sr}, n={n}, sigma={sigma}, t={t}"
+        )
+
+
+def test_dsr_monotonically_decreasing_in_n_trials() -> None:
+    """PROPERTY: DSR strictly decreases as the number of trials N grows.
+
+    More trials -> higher expected-maximum Sharpe under the null -> a fixed
+    observed Sharpe is less impressive -> lower DSR. This is the multiple-testing
+    penalty that the old `SR * sqrt(1 - 1/N)` formula got exactly backwards.
+    """
+    from aurora.validation.path_analysis import deflated_sharpe_ratio
+
+    # Interior regime (non-saturated) so the strict ordering is observable.
+    kwargs = dict(observed_sharpe=0.3, sharpe_std=0.1, n_observations=40)
+    values = [deflated_sharpe_ratio(n_paths=n, **kwargs) for n in (2, 3, 5, 10, 25, 100)]
+    for earlier, later in zip(values, values[1:]):
+        assert earlier > later, (
+            f"DSR must strictly decrease in N; got non-decreasing pair {earlier} -> {later}"
+        )
+
+
+def test_dsr_increases_with_observed_sharpe() -> None:
+    """PROPERTY: DSR increases monotonically with the observed Sharpe ratio."""
+    from aurora.validation.path_analysis import deflated_sharpe_ratio
+
+    kwargs = dict(n_paths=15, sharpe_std=0.1, n_observations=40)
+    values = [deflated_sharpe_ratio(observed_sharpe=sr, **kwargs) for sr in (0.0, 0.1, 0.2, 0.3, 0.5)]
+    for lower, higher in zip(values, values[1:]):
+        assert higher >= lower, "DSR must be non-decreasing in observed Sharpe"
+    assert values[-1] > values[0], "A strong Sharpe must give a strictly higher DSR than zero"
+
+
+def test_expected_max_sharpe_grows_with_trials() -> None:
+    """PROPERTY: the SR0 benchmark grows with the number of trials."""
+    from aurora.validation.path_analysis import expected_max_sharpe
+
+    sr0 = [expected_max_sharpe(n, sharpe_std=0.2) for n in (2, 5, 10, 50, 200)]
+    for earlier, later in zip(sr0, sr0[1:]):
+        assert later > earlier, "Expected-max Sharpe must increase with more trials"
+    # With zero dispersion or a single trial there is no selection benchmark.
+    assert expected_max_sharpe(1, 0.2) == 0.0
+    assert expected_max_sharpe(100, 0.0) == 0.0
+
+
+def test_pbo_is_none_for_single_configuration() -> None:
+    """PROPERTY: PBO (CSCV) is undefined for a single configuration -> None.
+
+    The honest result is None, not a fabricated ~0.5.
+    """
+    from aurora.validation.cpcv import probability_of_backtest_overfitting
+
+    rng = np.random.default_rng(1)
+    single = rng.normal(size=(300, 1))
+    assert probability_of_backtest_overfitting(single) is None
+
+
+def test_pbo_higher_for_overfit_than_robust_set() -> None:
+    """PROPERTY: PBO is higher for a noise/overfit config set than a robust one.
+
+    Construct two configuration grids:
+      * 'noise' — every config is pure noise with no genuine edge. Whichever
+        config wins in-sample is essentially random out-of-sample, so PBO is
+        high (the IS-best frequently lands at/below the OOS median).
+      * 'robust' — one config has a real, stable positive drift across the whole
+        sample while the rest are noise. The IS-best is usually the genuine
+        config, which also wins OOS, so PBO is low.
+    """
+    from aurora.validation.cpcv import probability_of_backtest_overfitting
+
+    rng = np.random.default_rng(7)
+    t, c = 400, 12
+
+    noise = rng.normal(loc=0.0, scale=1.0, size=(t, c))
+    pbo_noise = probability_of_backtest_overfitting(noise, n_blocks=10)
+
+    robust = rng.normal(loc=0.0, scale=1.0, size=(t, c))
+    # Give a single configuration a persistent, real edge (high signal-to-noise).
+    robust[:, 0] = rng.normal(loc=0.6, scale=1.0, size=t)
+    pbo_robust = probability_of_backtest_overfitting(robust, n_blocks=10)
+
+    assert pbo_noise is not None and pbo_robust is not None
+    assert 0.0 <= pbo_noise <= 1.0 and 0.0 <= pbo_robust <= 1.0
+    assert pbo_robust < pbo_noise, (
+        f"Robust set PBO ({pbo_robust}) should be below noise set PBO ({pbo_noise})"
+    )
+    # A pure-noise set should land near the maximally-overfit regime.
+    assert pbo_noise >= 0.5
+
+
+def test_cpcv_purge_removes_overlapping_labels_both_sides() -> None:
+    """PROPERTY: purging removes training rows whose label window overlaps the
+    test block on BOTH sides, while KEEPING legitimate earlier/later data.
+
+    A correct combinatorial split with an interior test block must retain
+    training observations both before and after that block — proving the splits
+    did not collapse into a forward-only (train-before / test-after) layout.
+    """
+    from aurora.validation.cpcv import CPCVConfig, generate_cpcv_splits
+
+    dates = pd.date_range("2020-01-01", periods=400, freq="D")
+    df = pd.DataFrame(
+        {
+            "timestamp": dates,
+            "signal": np.ones(len(dates)),
+            "close": np.ones(len(dates)) * 100.0,
+        }
+    )
+    purge = 10
+    config = CPCVConfig(n_splits=4, n_test_splits=2, purge_days=purge, embargo_days=10)
+    splits = generate_cpcv_splits(df, config)
+    assert len(splits) > 0
+
+    ts = np.sort(pd.to_datetime(df["timestamp"]).unique())
+
+    saw_interior_split_with_both_sides = False
+    for split in splits:
+        train = np.sort(split.train_indices)
+        test = np.sort(split.test_indices)
+
+        # No train/test index overlap.
+        assert len(set(train.tolist()) & set(test.tolist())) == 0
+
+        # Purge invariant: no kept training observation may have a label window
+        # [t, t + purge_days] overlapping a contiguous test block while also
+        # starting before that block ends.
+        test_set = set(test.tolist())
+        # Identify contiguous test blocks.
+        blocks = []
+        start = prev = test[0]
+        for idx in test[1:]:
+            if idx == prev + 1:
+                prev = idx
+            else:
+                blocks.append((start, prev))
+                start = prev = idx
+        blocks.append((start, prev))
+
+        for tr_idx in train:
+            t_start = ts[tr_idx]
+            t_label_end = t_start + pd.Timedelta(days=purge)
+            for b0, b1 in blocks:
+                block_start = ts[b0]
+                block_end = ts[b1]
+                overlaps = (t_label_end >= block_start) and (t_start <= block_end)
+                assert not overlaps, (
+                    f"Training idx {tr_idx} label window overlaps test block "
+                    f"[{b0},{b1}] but was not purged"
+                )
+
+        has_before = bool((train < test.min()).any())
+        has_after = bool((train > test.max()).any())
+        if test.min() > 0 and test.max() < len(ts) - 1:
+            # Interior test block: a correct CPCV split keeps data on both sides.
+            if has_before and has_after:
+                saw_interior_split_with_both_sides = True
+
+    assert saw_interior_split_with_both_sides, (
+        "No interior split retained training data on BOTH sides of the test block "
+        "— purge likely collapsed the combinatorial splits into forward-only."
+    )

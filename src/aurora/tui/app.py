@@ -129,6 +129,3 @@ def launch_tui(start_screen: str = "home", config_path: Optional[str] = None) ->
 
 if __name__ == "__main__":
     launch_tui()
-
-
-app = AuroraTUI()
